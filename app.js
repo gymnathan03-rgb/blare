@@ -8,6 +8,16 @@ const STREAK_KEY = "blare_streak_v1";
 const SETTINGS_KEY = "blare_settings_v1";
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+/* ---------------- Wake-Up Stakes ----------------
+   $2.99/mo subscription (Stripe Checkout) unlocks a $5 stake per alarm.
+   The hold is placed when the alarm actually rings, released on a clean
+   dismiss, and captured (charged) if you snooze a 3rd time or never
+   resolve the alarm at all (server-side safety net for that last case).
+   Fixed at $5 for now — see plan doc for future higher tiers. */
+const STAKES_API_BASE = "https://blare-stakes-worker.gymnathan03.workers.dev";
+const STAKES_CUSTOMER_KEY = "blare_stripe_customer_v1";
+const MAX_SNOOZES_BEFORE_CHARGE = 3;
+
 /* ---------------- State ---------------- */
 let alarms = loadAlarms();
 let streak = loadStreak();
@@ -16,6 +26,11 @@ let editingAlarmId = null;
 let activeRingingAlarm = null;
 let snoozeUntilMap = {}; // alarmId -> timestamp ms when snooze ends
 let checkTimer = null;
+
+let stripeCustomerId = localStorage.getItem(STAKES_CUSTOMER_KEY) || null;
+let subscribed = false;
+let activeStakeIntentId = null; // payment_intent_id for the currently-ringing alarm's hold
+let snoozeCount = 0;
 
 /* ---------------- Storage ---------------- */
 function loadAlarms() {
@@ -91,6 +106,14 @@ const gameDifficultyRow = document.getElementById("game-difficulty-row");
 const gameDifficultySelect = document.getElementById("game-difficulty-select");
 const dayToggles = document.querySelectorAll(".day-btn");
 const previewSoundBtn = document.getElementById("preview-sound-btn");
+
+const stakesToggle = document.getElementById("stakes-toggle");
+const stakesLockedHint = document.getElementById("stakes-locked-hint");
+const stakesLoadingEl = document.getElementById("stakes-loading");
+const stakesNotSubscribedEl = document.getElementById("stakes-not-subscribed");
+const stakesSubscribedEl = document.getElementById("stakes-subscribed");
+const subscribeBtn = document.getElementById("subscribe-btn");
+const stakesBadge = document.getElementById("stakes-badge");
 
 const ringingInfo = document.getElementById("ringing-info");
 const ringingTime = document.getElementById("ringing-time");
@@ -247,6 +270,7 @@ function buildMetaText(alarm) {
     parts.push("Once");
   }
   parts.push(SOUND_NAMES[alarm.sound] || alarm.sound);
+  if (alarm.stakesEnabled) parts.push("💵 $5 staked");
   return parts.join(" · ");
 }
 
@@ -316,6 +340,9 @@ function openEditScreen(alarmId) {
   gameDifficultySelect.value = alarm ? alarm.difficulty : "medium";
   gameDifficultyRow.classList.toggle("hidden", !gameToggle.checked);
 
+  stakesToggle.checked = alarm ? !!alarm.stakesEnabled : false;
+  updateStakesToggleLock();
+
   const activeDays = alarm ? (alarm.days || []) : [];
   dayToggles.forEach(btn => {
     const d = Number(btn.dataset.day);
@@ -350,6 +377,7 @@ function saveAlarmFromEdit() {
     snoozeMinutes: Number(snoozeSelect.value),
     requireGame: gameToggle.checked,
     difficulty: gameDifficultySelect.value,
+    stakesEnabled: subscribed && stakesToggle.checked,
     days: getSelectedDays(),
     enabled: true,
   };
@@ -454,6 +482,11 @@ function triggerRing(alarm) {
 
   snoozeBtn.classList.toggle("hidden", alarm.snoozeMinutes === 0);
 
+  snoozeCount = 0;
+  activeStakeIntentId = null;
+  stakesBadge.classList.add("hidden");
+  if (alarm.stakesEnabled) startStakeHold(alarm);
+
   showScreen(ringingScreen);
   AlarmSound.play(alarm.sound, alarm.ramp);
 
@@ -502,6 +535,15 @@ function endRinging() {
 
 function handleSnooze() {
   if (!activeRingingAlarm) return;
+
+  snoozeCount++;
+  if (activeStakeIntentId && snoozeCount >= MAX_SNOOZES_BEFORE_CHARGE) {
+    captureStakeIfAny();
+    showToast("Charged $5 — you snoozed 3 times. Dismiss to stop the alarm.");
+    snoozeBtn.classList.add("hidden"); // no more snoozing; they still have to dismiss
+    return;
+  }
+
   const mins = activeRingingAlarm.snoozeMinutes || 5;
   snoozeUntilMap[activeRingingAlarm.id] = Date.now() + mins * 60000;
   showToast(`Snoozed for ${mins} minutes.`);
@@ -513,9 +555,16 @@ function handleDismissRequest() {
   if (activeRingingAlarm.requireGame) {
     startReflexGame(activeRingingAlarm.difficulty);
   } else {
-    recordSuccessfulWake();
-    endRinging();
+    handleWakeSuccess();
   }
+}
+
+// A clean dismiss releases any stake hold (no charge) on top of the
+// existing streak-tracking. Shared by both dismiss paths below.
+function handleWakeSuccess() {
+  recordSuccessfulWake();
+  releaseStakeIfAny();
+  endRinging();
 }
 
 /* ---------------- Reflex "awake-o-meter" game ----------------
@@ -591,8 +640,7 @@ function onReflexHit() {
     updateReflexStreakText();
     if (reflexStreak >= reflexLevel.required) {
       reflexFeedbackEl.textContent = "Awake! Nice reflexes.";
-      recordSuccessfulWake();
-      endRinging();
+      handleWakeSuccess();
       return;
     }
     reflexFeedbackEl.textContent = `${Math.round(reaction)}ms — keep going!`;
@@ -977,6 +1025,7 @@ deleteAlarmBtn.addEventListener("click", deleteCurrentAlarm);
 
 settingsBtn.addEventListener("click", () => {
   use24hToggle.checked = settings.use24Hour;
+  renderStakesSettingsUI(false);
   showScreen(settingsScreen);
 });
 closeSettingsBtn.addEventListener("click", () => showScreen(mainScreen));
@@ -995,6 +1044,8 @@ dayToggles.forEach(btn => {
 gameToggle.addEventListener("change", () => {
   gameDifficultyRow.classList.toggle("hidden", !gameToggle.checked);
 });
+
+subscribeBtn.addEventListener("click", startCheckout);
 
 previewSoundBtn.addEventListener("click", () => {
   AlarmSound.previewFor(1500, soundSelect.value);
@@ -1082,6 +1133,115 @@ window.addEventListener("appinstalled", () => {
   recordInstallPing();
 });
 
+/* ---------------- Wake-Up Stakes (Stripe) ---------------- */
+async function stripeApi(path, options) {
+  const res = await fetch(`${STAKES_API_BASE}${path}`, {
+    method: options && options.body ? "POST" : "GET",
+    headers: options && options.body ? { "Content-Type": "application/json" } : undefined,
+    body: options && options.body ? JSON.stringify(options.body) : undefined,
+  });
+  if (!res.ok) throw new Error(`Stakes API ${path} failed: ${res.status}`);
+  return res.json();
+}
+
+function renderStakesSettingsUI(loading) {
+  stakesLoadingEl.classList.toggle("hidden", !loading);
+  stakesNotSubscribedEl.classList.toggle("hidden", loading || subscribed);
+  stakesSubscribedEl.classList.toggle("hidden", loading || !subscribed);
+}
+
+function updateStakesToggleLock() {
+  stakesToggle.disabled = !subscribed;
+  stakesLockedHint.classList.toggle("hidden", subscribed);
+  if (!subscribed) stakesToggle.checked = false;
+}
+
+async function checkSubscriptionOnLoad() {
+  renderStakesSettingsUI(true);
+
+  // Coming back from a successful Stripe Checkout redirect.
+  const params = new URLSearchParams(location.search);
+  const checkoutSessionId = params.get("session_id");
+  if (params.get("checkout") === "success" && checkoutSessionId) {
+    try {
+      const result = await stripeApi(`/checkout-result?session_id=${encodeURIComponent(checkoutSessionId)}`);
+      if (result.customerId) {
+        stripeCustomerId = result.customerId;
+        localStorage.setItem(STAKES_CUSTOMER_KEY, stripeCustomerId);
+      }
+      subscribed = !!result.subscribed;
+      if (subscribed) showToast("Subscribed! Stakes are now unlocked.");
+    } catch (e) {
+      showToast("Couldn't confirm your subscription — try Settings again in a moment.");
+    }
+    // Clean the query string so a refresh doesn't re-process the same session.
+    history.replaceState(null, "", location.pathname);
+    renderStakesSettingsUI(false);
+    updateStakesToggleLock();
+    return;
+  }
+
+  if (!stripeCustomerId) {
+    subscribed = false;
+    renderStakesSettingsUI(false);
+    updateStakesToggleLock();
+    return;
+  }
+
+  try {
+    const result = await stripeApi(`/subscription-status?customer_id=${encodeURIComponent(stripeCustomerId)}`);
+    subscribed = !!result.subscribed;
+  } catch (e) {
+    subscribed = false; // fail closed on the paywall check, but never blocks the alarm itself
+  }
+  renderStakesSettingsUI(false);
+  updateStakesToggleLock();
+}
+
+async function startCheckout() {
+  subscribeBtn.disabled = true;
+  subscribeBtn.textContent = "Redirecting…";
+  try {
+    const { url } = await stripeApi("/create-checkout-session", { body: {} });
+    window.location.href = url;
+  } catch (e) {
+    showToast("Couldn't start checkout — try again in a moment.");
+    subscribeBtn.disabled = false;
+    subscribeBtn.textContent = "Subscribe — $2.99/mo";
+  }
+}
+
+async function startStakeHold(alarm) {
+  if (!alarm.stakesEnabled || !subscribed || !stripeCustomerId) return;
+  try {
+    const result = await stripeApi("/stake/start", { body: { customer_id: stripeCustomerId } });
+    activeStakeIntentId = result.paymentIntentId;
+    stakesBadge.classList.remove("hidden");
+  } catch (e) {
+    // Fail open: a Stakes backend hiccup shouldn't be able to keep the alarm
+    // from doing its actual job of waking you up.
+    activeStakeIntentId = null;
+  }
+}
+
+async function releaseStakeIfAny() {
+  if (!activeStakeIntentId) return;
+  const id = activeStakeIntentId;
+  activeStakeIntentId = null;
+  try {
+    await stripeApi("/stake/release", { body: { payment_intent_id: id } });
+  } catch (e) { /* nothing actionable client-side if this fails */ }
+}
+
+async function captureStakeIfAny() {
+  if (!activeStakeIntentId) return;
+  const id = activeStakeIntentId;
+  activeStakeIntentId = null;
+  try {
+    await stripeApi("/stake/capture", { body: { payment_intent_id: id } });
+  } catch (e) { /* nothing actionable client-side if this fails */ }
+}
+
 /* Owner-only view: visiting the site with ?stats in the URL shows a small
    permanent pill at the bottom of the screen with the live install count.
    Regular installers never see this — it's not part of the normal UI, and
@@ -1112,3 +1272,4 @@ renderAlarmList();
 updateNextAlarmBanner();
 updateLiveClock();
 startCheckLoop();
+checkSubscriptionOnLoad();
