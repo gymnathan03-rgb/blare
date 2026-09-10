@@ -1019,7 +1019,11 @@ document.addEventListener("visibilitychange", () => {
    Registering also triggers the browser's own byte-diff check against the
    deployed sw.js. When it finds a newer one, we let it activate immediately
    (sw.js already calls skipWaiting/clients.claim) and then reload this page
-   once, so a visitor never gets stuck on an old cached version. */
+   once, so a visitor never gets stuck on an old cached version.
+
+   Guarded with a sessionStorage flag: a CDN edge briefly serving mismatched
+   copies of sw.js can otherwise make this fire repeatedly and reload-loop
+   the page. At most one auto-reload happens per tab session. */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").then((reg) => {
@@ -1027,9 +1031,12 @@ if ("serviceWorker" in navigator) {
         const newWorker = reg.installing;
         if (!newWorker) return;
         newWorker.addEventListener("statechange", () => {
-          if (newWorker.state === "activated" && navigator.serviceWorker.controller) {
-            window.location.reload();
-          }
+          if (newWorker.state !== "activated" || !navigator.serviceWorker.controller) return;
+          let alreadyReloaded = false;
+          try { alreadyReloaded = sessionStorage.getItem("sw_auto_reloaded") === "1"; } catch (e) {}
+          if (alreadyReloaded) return;
+          try { sessionStorage.setItem("sw_auto_reloaded", "1"); } catch (e) {}
+          window.location.reload();
         });
       });
     }).catch(() => {});

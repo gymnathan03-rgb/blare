@@ -1,4 +1,4 @@
-const CACHE_NAME = "blare-v2";
+const CACHE_NAME = "blare-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -17,7 +17,9 @@ self.addEventListener("install", (event) => {
     caches.open(CACHE_NAME).then((cache) =>
       Promise.all(
         ASSETS.map((url) =>
-          fetch(url, { cache: "reload" }).then((res) => cache.put(url, res))
+          fetch(url, { cache: "reload" })
+            .then((res) => cache.put(url, res))
+            .catch(() => {}) // a single flaky fetch shouldn't fail the whole install
         )
       )
     )
