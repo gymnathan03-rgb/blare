@@ -340,6 +340,35 @@ html, body {
   margin-top: 10px;
 }
 
+.stakes-hint {
+  margin: -14px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.stakes-settings { gap: 10px; }
+.stakes-status { display: flex; flex-direction: column; gap: 10px; }
+.stakes-desc {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+#stakes-subscribed .stakes-desc { color: var(--green); }
+
+.primary-btn {
+  background: var(--accent);
+  color: #201a0c;
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.primary-btn:active { transform: scale(0.98); }
+
+#stakes-toggle-row:has(#stakes-toggle:disabled) .field-label { opacity: 0.4; }
+
 /* ---------- RINGING SCREEN ---------- */
 
 .ringing-screen {
@@ -382,6 +411,18 @@ html, body {
   font-size: 22px;
   color: #ffe9b0;
   margin-bottom: 30px;
+}
+
+.stakes-badge {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--accent-dim);
+  color: var(--accent-glow);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 999px;
+  margin-top: -20px;
+  margin-bottom: 10px;
 }
 
 .dismiss-panel {
