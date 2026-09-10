@@ -1,4 +1,4 @@
-const CACHE_NAME = "blare-v1";
+const CACHE_NAME = "blare-v2";
 const ASSETS = [
   "./",
   "./index.html",

@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------
-   Blare — Alarm app for people who sleep through everything
+   Blare Alarm Clock — for people who sleep through everything
    Vanilla JS, no dependencies, no external audio files.
 --------------------------------------------------------- */
 
