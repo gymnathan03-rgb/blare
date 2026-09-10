@@ -131,6 +131,15 @@
         </select>
       </div>
 
+      <div class="field-group toggle-row" id="stakes-toggle-row">
+        <label class="field-label" for="stakes-toggle">Bet $5 you'll wake up</label>
+        <label class="switch">
+          <input type="checkbox" id="stakes-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="stakes-hint hidden" id="stakes-locked-hint">Subscribe in Settings to unlock stakes.</p>
+
       <button id="delete-alarm-btn" class="danger-btn hidden">Delete Alarm</button>
     </div>
   </div>
@@ -150,6 +159,23 @@
           <span class="slider"></span>
         </label>
       </div>
+
+      <div class="field-group stakes-settings">
+        <label class="field-label">Wake-Up Stakes</label>
+
+        <div id="stakes-loading" class="stakes-status">
+          <p class="stakes-desc">Checking subscription…</p>
+        </div>
+
+        <div id="stakes-not-subscribed" class="stakes-status hidden">
+          <p class="stakes-desc">Put $5 on the line each morning you set it. Subscribe to unlock.</p>
+          <button type="button" id="subscribe-btn" class="primary-btn">Subscribe — $2.99/mo</button>
+        </div>
+
+        <div id="stakes-subscribed" class="stakes-status hidden">
+          <p class="stakes-desc">✓ Subscribed — Stakes are available on your alarms.</p>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -160,6 +186,7 @@
     <div id="ringing-info" class="ringing-content">
       <div class="ringing-time" id="ringing-time">00:00</div>
       <div class="ringing-label" id="ringing-label">Wake up!</div>
+      <div id="stakes-badge" class="stakes-badge hidden">💵 $5 on the line</div>
 
       <div class="dismiss-panel">
         <button id="snooze-btn" class="snooze-btn">Snooze</button>
