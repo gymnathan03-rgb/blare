@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Blare — Heavy Sleeper Alarm</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#14110a">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Work+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+
+  <!-- MAIN SCREEN -->
+  <div id="main-screen" class="screen">
+    <header class="topbar">
+      <button id="settings-btn" class="settings-gear" aria-label="Settings">⚙</button>
+      <div class="clock" id="live-clock">00:00</div>
+      <div class="date" id="live-date">Loading...</div>
+    </header>
+
+    <div id="install-banner" class="install-banner hidden">
+      <span>Install this app for the full alarm experience</span>
+      <button id="install-btn" class="install-btn">Install</button>
+    </div>
+
+    <div id="streak-banner" class="streak-banner hidden"></div>
+
+    <div id="next-alarm-banner" class="next-alarm-banner hidden">
+      Next alarm: <span id="next-alarm-text"></span>
+    </div>
+
+    <main class="alarm-list-wrap">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-emoji">😴</div>
+        <p>No alarms yet.<br>Add one so you actually get up.</p>
+      </div>
+      <ul id="alarm-list" class="alarm-list"></ul>
+    </main>
+
+    <button id="add-alarm-btn" class="fab" aria-label="Add alarm">+</button>
+  </div>
+
+  <!-- EDIT / ADD ALARM SCREEN -->
+  <div id="edit-screen" class="screen hidden">
+    <header class="edit-header">
+      <button id="cancel-edit-btn" class="text-btn">Cancel</button>
+      <h2 id="edit-title">New Alarm</h2>
+      <button id="save-alarm-btn" class="text-btn save">Save</button>
+    </header>
+
+    <div class="edit-body">
+      <div class="time-picker-wrap">
+        <input type="time" id="time-input" class="time-input">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Repeat</label>
+        <div class="day-toggles" id="day-toggles">
+          <button type="button" class="day-btn" data-day="0">S</button>
+          <button type="button" class="day-btn" data-day="1">M</button>
+          <button type="button" class="day-btn" data-day="2">T</button>
+          <button type="button" class="day-btn" data-day="3">W</button>
+          <button type="button" class="day-btn" data-day="4">T</button>
+          <button type="button" class="day-btn" data-day="5">F</button>
+          <button type="button" class="day-btn" data-day="6">S</button>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="label-input">Label</label>
+        <input type="text" id="label-input" class="text-input" placeholder="Wake up!" maxlength="40">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Sound</label>
+        <select id="sound-select" class="select-input">
+          <option value="siren">Air Raid Siren (Loudest)</option>
+          <option value="airhorn">Air Horn Blast</option>
+          <option value="klaxon">Fire Alarm Klaxon</option>
+          <option value="alarm">Classic Alarm Clock</option>
+          <option value="beep">Digital Beeping</option>
+          <option value="reveille">Reveille Bugle</option>
+          <option value="chiptune">8-Bit Chiptune</option>
+          <option value="house">House Music</option>
+          <option value="jazz">Jazz Combo</option>
+          <option value="rooster">Rooster Crow</option>
+        </select>
+        <button type="button" id="preview-sound-btn" class="text-btn small">▶ Preview</button>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Volume ramp-up</label>
+        <select id="ramp-select" class="select-input">
+          <option value="instant">Instant full blast</option>
+          <option value="15" selected>Loud within 15 seconds</option>
+          <option value="30">Loud within 30 seconds</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Snooze length</label>
+        <select id="snooze-select" class="select-input">
+          <option value="0">No snooze allowed</option>
+          <option value="3">3 minutes</option>
+          <option value="5" selected>5 minutes</option>
+          <option value="10">10 minutes</option>
+        </select>
+      </div>
+
+      <div class="field-group toggle-row">
+        <label class="field-label" for="game-toggle">Require reflex game to dismiss</label>
+        <label class="switch">
+          <input type="checkbox" id="game-toggle" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="field-group toggle-row" id="game-difficulty-row">
+        <label class="field-label" for="game-difficulty-select">Reflex difficulty</label>
+        <select id="game-difficulty-select" class="select-input small-select">
+          <option value="easy">Easy — 3 quick taps</option>
+          <option value="medium" selected>Medium — 5 quick taps</option>
+          <option value="hard">Hard — 7 quick taps</option>
+        </select>
+      </div>
+
+      <button id="delete-alarm-btn" class="danger-btn hidden">Delete Alarm</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS SCREEN -->
+  <div id="settings-screen" class="screen hidden">
+    <header class="edit-header">
+      <button id="close-settings-btn" class="text-btn">Close</button>
+      <h2>Settings</h2>
+      <button class="text-btn" style="visibility:hidden" aria-hidden="true">Close</button>
+    </header>
+    <div class="edit-body">
+      <div class="field-group toggle-row">
+        <label class="field-label" for="use24h-toggle">Use 24-hour time</label>
+        <label class="switch">
+          <input type="checkbox" id="use24h-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- RINGING SCREEN -->
+  <div id="ringing-screen" class="screen ringing-screen hidden">
+    <div class="ringing-flash"></div>
+
+    <div id="ringing-info" class="ringing-content">
+      <div class="ringing-time" id="ringing-time">00:00</div>
+      <div class="ringing-label" id="ringing-label">Wake up!</div>
+
+      <div class="dismiss-panel">
+        <button id="snooze-btn" class="snooze-btn">Snooze</button>
+        <button id="dismiss-btn" class="dismiss-btn">Dismiss</button>
+      </div>
+    </div>
+
+    <div id="reflex-game" class="reflex-game hidden">
+      <div class="reflex-header">
+        <div class="reflex-title">Tap the target to prove you're awake</div>
+        <div class="reflex-streak" id="reflex-streak">0 / 5</div>
+        <div class="reflex-feedback" id="reflex-feedback">&nbsp;</div>
+      </div>
+      <div class="reflex-zone" id="reflex-zone"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <button id="owner-stats-tab" class="owner-stats-tab hidden" type="button" title="Tap to refresh">Installs: —</button>
+
+  <script src="app.js?v=1"></script>
+</body>
+</html>
