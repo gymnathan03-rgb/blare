@@ -548,6 +548,21 @@ html, body {
   object-fit: cover;
   transform: scaleX(-1); /* mirror, like a selfie camera */
 }
+.yt-audio-frame {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  bottom: 0;
+  left: 0;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+#youtube-connected {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .toast {
   position: fixed;
   bottom: 30px;
