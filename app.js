@@ -43,6 +43,29 @@ const BALANCE_UTENSILS = {
   spork:        { label: "spork",           cocoClass: null },
 };
 
+/* ---------------- Wake-Up Playlist ----------------
+   Subscriber-only alternative to the built-in tones: wake up to a playlist
+   from a connected music account instead. YouTube Music is wired up first
+   (picked over Spotify/Apple Music since it's free to set up); Spotify and
+   Apple Music show in the picker as locked "coming soon" options until they
+   get the same treatment — each needs its own developer credentials the
+   same way YOUTUBE_OAUTH_CLIENT_ID does below.
+
+   There's no official YouTube Music personal-library/playback API for the
+   web, so this plays whichever regular YouTube playlist you point it at via
+   the YouTube Data API (to list your playlists) + the YouTube IFrame Player
+   API (to actually play one). YouTube refuses to embed Private playlists —
+   including the default-private "Liked videos" list — so a playlist has to
+   be set to Public or Unlisted in YouTube's own settings before it'll work
+   here; the picker UI says this explicitly. If playback doesn't actually
+   start within YOUTUBE_PLAYBACK_TIMEOUT_MS (blocked autoplay, empty/private
+   playlist, network hiccup, API never loaded), we fall back to the alarm's
+   built-in sound — same fail-open pattern as the Balance Challenge camera
+   fallback, so a music hiccup can never leave the alarm silent. */
+const YOUTUBE_OAUTH_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com";
+const YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
+const YOUTUBE_PLAYBACK_TIMEOUT_MS = 6000;
+
 /* ---------------- State ---------------- */
 let alarms = loadAlarms();
 let streak = loadStreak();
@@ -56,6 +79,14 @@ let stripeCustomerId = localStorage.getItem(STAKES_CUSTOMER_KEY) || null;
 let subscribed = false;
 let activeStakeIntentId = null; // payment_intent_id for the currently-ringing alarm's hold
 let snoozeCount = 0;
+
+let youtubeAccessToken = null; // session-only (Google's implicit-flow token), never persisted
+let youtubeTokenClient = null;
+let youtubePlaylistsCache = null;
+let youtubePlayer = null;
+let youtubePlaybackTimeoutId = null;
+let ytIframeApiReady = false;
+window.onYouTubeIframeAPIReady = function () { ytIframeApiReady = true; };
 
 /* ---------------- Storage ---------------- */
 function loadAlarms() {
@@ -132,6 +163,13 @@ const gameDifficultyRow = document.getElementById("game-difficulty-row");
 const gameDifficultySelect = document.getElementById("game-difficulty-select");
 const balanceUtensilRow = document.getElementById("balance-utensil-row");
 const balanceUtensilSelect = document.getElementById("balance-utensil-select");
+const wakeSourceSelect = document.getElementById("wake-source-select");
+const wakeSourceLockedHint = document.getElementById("wake-source-locked-hint");
+const youtubeConnectRow = document.getElementById("youtube-connect-row");
+const youtubeConnectBtn = document.getElementById("youtube-connect-btn");
+const youtubeNotConnectedEl = document.getElementById("youtube-not-connected");
+const youtubeConnectedEl = document.getElementById("youtube-connected");
+const youtubePlaylistSelect = document.getElementById("youtube-playlist-select");
 const dayToggles = document.querySelectorAll(".day-btn");
 const previewSoundBtn = document.getElementById("preview-sound-btn");
 
@@ -311,6 +349,7 @@ function buildMetaText(alarm) {
   }
   const amount = alarm.stakeAmountCents || 0;
   if (amount > 0) parts.push(`💵 $${(amount / 100).toFixed(0)} staked`);
+  if (alarm.wakeSource === "youtube") parts.push("🎵 YouTube playlist");
   return parts.join(" · ");
 }
 
@@ -386,8 +425,18 @@ function openEditScreen(alarmId) {
   gameDifficultySelect.value = alarm ? (alarm.difficulty || "medium") : "medium";
   balanceUtensilSelect.value = alarm ? (alarm.balanceUtensil || "spoon") : "spoon";
 
+  wakeSourceSelect.value = alarm ? (alarm.wakeSource || "builtin") : "builtin";
+
   stakesAmountSelect.value = String(alarm ? (alarm.stakeAmountCents || 0) : 0);
-  updateStakesLock(); // also refreshes dismiss-mode lock/visibility
+  updateStakesLock(); // also refreshes dismiss-mode lock/visibility + wake-source lock/visibility
+
+  // If this alarm already has a saved YouTube playlist and we're already
+  // connected, make sure it shows as selected even before a fresh
+  // playlists.list fetch finishes (or if it never runs again this session).
+  if (alarm && alarm.wakeSource === "youtube" && youtubeAccessToken) {
+    if (youtubePlaylistsCache) renderYoutubePlaylistOptions();
+    else loadYoutubePlaylists();
+  }
 
   const activeDays = alarm ? (alarm.days || []) : [];
   dayToggles.forEach(btn => {
@@ -424,6 +473,12 @@ function saveAlarmFromEdit() {
   const chosenStakeCents = Number(stakesAmountSelect.value) || 0;
   const stakeAmountCents = (subscribed && STAKE_TIERS_CENTS.includes(chosenStakeCents)) ? chosenStakeCents : 0;
 
+  const chosenWakeSource = wakeSourceSelect.value;
+  const wakeSource = (chosenWakeSource === "youtube" && subscribed && youtubePlaylistSelect.value)
+    ? "youtube"
+    : "builtin";
+  const youtubePlaylistId = wakeSource === "youtube" ? youtubePlaylistSelect.value : null;
+
   const data = {
     hour, minute,
     label: labelInput.value.trim(),
@@ -434,6 +489,8 @@ function saveAlarmFromEdit() {
     difficulty: gameDifficultySelect.value,
     balanceUtensil: balanceUtensilSelect.value,
     stakeAmountCents,
+    wakeSource,
+    youtubePlaylistId,
     days: getSelectedDays(),
     enabled: true,
   };
@@ -536,6 +593,7 @@ function triggerRing(alarm) {
   reflexGame.classList.add("hidden");
   stopReflexGame();
   stopBalanceChallenge();
+  stopYoutubePlayback();
 
   snoozeBtn.classList.toggle("hidden", alarm.snoozeMinutes === 0);
 
@@ -549,7 +607,11 @@ function triggerRing(alarm) {
   }
 
   showScreen(ringingScreen);
-  AlarmSound.play(alarm.sound, alarm.ramp);
+  if (alarm.wakeSource === "youtube" && alarm.youtubePlaylistId) {
+    playYoutubeWakeSound(alarm);
+  } else {
+    AlarmSound.play(alarm.sound, alarm.ramp);
+  }
 
   if (navigator.vibrate) {
     startVibration();
@@ -585,6 +647,7 @@ function releaseWakeLock() {
 
 function endRinging() {
   AlarmSound.stop();
+  stopYoutubePlayback();
   stopVibration();
   releaseWakeLock();
   stopReflexGame();
@@ -1270,6 +1333,15 @@ dismissModeSelect.addEventListener("change", () => {
   updateDismissModeUI();
 });
 
+wakeSourceSelect.addEventListener("change", () => {
+  if (wakeSourceSelect.value === "youtube" && !subscribed) {
+    wakeSourceSelect.value = "builtin";
+    showToast("Subscribe in Settings to unlock playlist wake-up sounds.");
+  }
+  updateWakeSourceUI();
+});
+youtubeConnectBtn.addEventListener("click", connectYoutube);
+
 subscribeBtn.addEventListener("click", startCheckout);
 
 previewSoundBtn.addEventListener("click", () => {
@@ -1382,6 +1454,7 @@ function updateStakesLock() {
   }
   if (!subscribed) stakesAmountSelect.value = "0";
   updateDismissModeUI();
+  updateWakeSourceUI();
 }
 
 function updateDismissModeUI() {
@@ -1392,6 +1465,140 @@ function updateDismissModeUI() {
   const mode = dismissModeSelect.value;
   gameDifficultyRow.classList.toggle("hidden", mode !== "reflex");
   balanceUtensilRow.classList.toggle("hidden", mode !== "balance");
+}
+
+function updateWakeSourceUI() {
+  const youtubeOpt = wakeSourceSelect.querySelector('option[value="youtube"]');
+  if (youtubeOpt) youtubeOpt.disabled = !subscribed;
+  wakeSourceLockedHint.classList.toggle("hidden", subscribed);
+
+  const source = wakeSourceSelect.value;
+  youtubeConnectRow.classList.toggle("hidden", source !== "youtube");
+  if (source === "youtube") {
+    youtubeNotConnectedEl.classList.toggle("hidden", !!youtubeAccessToken);
+    youtubeConnectedEl.classList.toggle("hidden", !youtubeAccessToken);
+    if (youtubeAccessToken && !youtubePlaylistsCache) loadYoutubePlaylists();
+  }
+}
+
+/* ---------------- Wake-Up Playlist: YouTube (OAuth + playback) ---------------- */
+function ensureYoutubeTokenClient() {
+  if (youtubeTokenClient) return youtubeTokenClient;
+  if (typeof google === "undefined" || !google.accounts || !google.accounts.oauth2) return null;
+  youtubeTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: YOUTUBE_OAUTH_CLIENT_ID,
+    scope: YOUTUBE_SCOPE,
+    callback: (resp) => {
+      if (resp && resp.access_token) {
+        youtubeAccessToken = resp.access_token;
+        youtubePlaylistsCache = null;
+        updateWakeSourceUI();
+      } else {
+        showToast("Couldn't connect your YouTube account.");
+      }
+    },
+  });
+  return youtubeTokenClient;
+}
+
+function connectYoutube() {
+  const client = ensureYoutubeTokenClient();
+  if (!client) {
+    showToast("YouTube sign-in isn't ready yet — try again in a moment.");
+    return;
+  }
+  client.requestAccessToken({ prompt: "consent" });
+}
+
+async function loadYoutubePlaylists() {
+  if (!youtubeAccessToken) return;
+  youtubePlaylistSelect.innerHTML = '<option value="">Loading playlists…</option>';
+  try {
+    const res = await fetch(
+      "https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50",
+      { headers: { Authorization: `Bearer ${youtubeAccessToken}` } }
+    );
+    if (!res.ok) throw new Error(`playlists fetch failed: ${res.status}`);
+    const data = await res.json();
+    youtubePlaylistsCache = (data.items || []).map(item => ({ id: item.id, title: item.snippet.title }));
+    renderYoutubePlaylistOptions();
+  } catch (e) {
+    youtubePlaylistsCache = null;
+    youtubePlaylistSelect.innerHTML = '<option value="">Couldn’t load playlists — try reconnecting</option>';
+  }
+}
+
+function renderYoutubePlaylistOptions() {
+  youtubePlaylistSelect.innerHTML = "";
+  if (!youtubePlaylistsCache || youtubePlaylistsCache.length === 0) {
+    youtubePlaylistSelect.innerHTML = '<option value="">No playlists found</option>';
+    return;
+  }
+  for (const pl of youtubePlaylistsCache) {
+    const opt = document.createElement("option");
+    opt.value = pl.id;
+    opt.textContent = pl.title;
+    youtubePlaylistSelect.appendChild(opt);
+  }
+  // Keep showing the alarm's already-saved playlist even if it didn't come
+  // back in this fetch (e.g. picked from a different connected account).
+  const alarm = editingAlarmId ? alarms.find(a => a.id === editingAlarmId) : null;
+  if (alarm && alarm.youtubePlaylistId) {
+    const exists = youtubePlaylistsCache.some(pl => pl.id === alarm.youtubePlaylistId);
+    if (!exists) {
+      const opt = document.createElement("option");
+      opt.value = alarm.youtubePlaylistId;
+      opt.textContent = "(previously selected playlist)";
+      youtubePlaylistSelect.appendChild(opt);
+    }
+    youtubePlaylistSelect.value = alarm.youtubePlaylistId;
+  }
+}
+
+function playYoutubeWakeSound(alarm) {
+  const started = tryStartYoutubePlayback(alarm.youtubePlaylistId);
+  if (!started) {
+    AlarmSound.play(alarm.sound, alarm.ramp); // IFrame API never loaded — fall back immediately
+    return;
+  }
+  youtubePlaybackTimeoutId = setTimeout(() => {
+    youtubePlaybackTimeoutId = null;
+    if (youtubePlayer) { try { youtubePlayer.stopVideo(); } catch (e) {} }
+    AlarmSound.play(alarm.sound, alarm.ramp);
+  }, YOUTUBE_PLAYBACK_TIMEOUT_MS);
+}
+
+function tryStartYoutubePlayback(playlistId) {
+  if (typeof YT === "undefined" || !YT.Player || !ytIframeApiReady) return false;
+
+  const onReady = (e) => {
+    e.target.setVolume(100);
+    e.target.playVideo();
+  };
+  const onStateChange = (e) => {
+    if (e.data === YT.PlayerState.PLAYING && youtubePlaybackTimeoutId) {
+      clearTimeout(youtubePlaybackTimeoutId);
+      youtubePlaybackTimeoutId = null;
+    }
+  };
+
+  if (youtubePlayer) {
+    youtubePlayer.loadPlaylist({ list: playlistId, listType: "playlist", index: 0 });
+    youtubePlayer.setVolume(100);
+  } else {
+    youtubePlayer = new YT.Player("yt-audio-player", {
+      height: "1",
+      width: "1",
+      playerVars: { listType: "playlist", list: playlistId, autoplay: 1, loop: 1 },
+      events: { onReady, onStateChange },
+    });
+  }
+  return true;
+}
+
+function stopYoutubePlayback() {
+  if (youtubePlaybackTimeoutId) { clearTimeout(youtubePlaybackTimeoutId); youtubePlaybackTimeoutId = null; }
+  if (youtubePlayer) { try { youtubePlayer.stopVideo(); } catch (e) {} }
 }
 
 async function checkSubscriptionOnLoad() {
