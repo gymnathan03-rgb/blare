@@ -566,7 +566,10 @@ html, body {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scaleX(-1); /* mirror, like a selfie camera */
+  /* translateZ(0) forces this onto its own GPU layer — works around a WebKit
+     bug where camera srcObject video never composites to screen inside an
+     iOS standalone (home-screen) web app without it. */
+  transform: scaleX(-1) translateZ(0); /* mirror, like a selfie camera */
 }
 .yt-audio-frame {
   position: fixed;
