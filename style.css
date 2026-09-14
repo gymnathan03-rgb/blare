@@ -76,6 +76,26 @@ html, body {
   vertical-align: middle;
 }
 
+.app-intro {
+  flex-shrink: 0;
+  padding: 0 24px 16px;
+  text-align: center;
+}
+.app-intro-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 1px;
+  color: var(--accent);
+  margin: 0 0 6px;
+}
+.app-intro-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0;
+}
+
 .date {
   font-size: 16px;
   color: var(--text-dim);
