@@ -937,7 +937,13 @@ async function startBalanceChallenge(alarm) {
 
   try {
     balanceStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+    // Some iOS versions fail to composite a srcObject video's frames inside a
+    // standalone (home-screen) web app unless these are set as JS properties
+    // (not just HTML attributes) and the element is force-reloaded before play.
+    balanceVideo.muted = true;
+    balanceVideo.playsInline = true;
     balanceVideo.srcObject = balanceStream;
+    balanceVideo.load();
     await balanceVideo.play();
     balanceFeedbackEl.textContent = "Loading…";
     await loadBalanceModels();
