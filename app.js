@@ -66,6 +66,45 @@ const YOUTUBE_OAUTH_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercont
 const YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
 const YOUTUBE_PLAYBACK_TIMEOUT_MS = 6000;
 
+/* ---------------- Wake-Up Playlist: Spotify ----------------
+   Uses Authorization Code + PKCE (no client secret, safe for a static site)
+   against a free Spotify Developer app. SPOTIFY_CLIENT_ID and the redirect
+   URI registered in that app's dashboard both need to exactly match this
+   page's URL. Playback goes through the Web Playback SDK, which creates an
+   in-browser Spotify Connect device — this only works if the account that
+   connects has Spotify Premium (Spotify's own restriction, not ours), so a
+   failed/absent SDK "ready" event within SPOTIFY_PLAYBACK_TIMEOUT_MS falls
+   back to the built-in sound, same fail-open pattern as YouTube/Balance. */
+const SPOTIFY_CLIENT_ID = "YOUR_SPOTIFY_CLIENT_ID";
+const SPOTIFY_SCOPES = "streaming user-read-email user-read-private playlist-read-private playlist-read-collaborative user-library-read";
+const SPOTIFY_PLAYBACK_TIMEOUT_MS = 6000;
+const SPOTIFY_TOKEN_KEY = "blare_spotify_token_v1";
+const SPOTIFY_REFRESH_KEY = "blare_spotify_refresh_v1";
+const SPOTIFY_VERIFIER_KEY = "blare_spotify_pkce_verifier_v1";
+
+/* ---------------- Wake-Up Playlist: Apple Music ----------------
+   MusicKit JS handles both auth and playback, but it needs a developer
+   token — a JWT signed with a private key from a paid Apple Developer
+   Program membership ($99/yr). That token can't be generated from this
+   static site; it has to be created once (and renewed periodically, up to
+   ~6 months validity) with Nate's own Apple Developer account and pasted in
+   below. Everything else here — the connect flow, playlist picker, playback
+   — works the same way once a real token is in place. */
+const APPLE_MUSIC_DEVELOPER_TOKEN = "YOUR_APPLE_MUSIC_DEVELOPER_TOKEN";
+const APPLE_MUSIC_PLAYBACK_TIMEOUT_MS = 6000;
+
+/* ---------------- Owner unlock ----------------
+   Visiting the app once with ?owner=<OWNER_UNLOCK_TOKEN> in the URL sets a
+   permanent localStorage flag on that device forcing every subscriber-only
+   feature unlocked for free, forever — no Stripe subscription, no Worker
+   calls. This is the owner's own private link (never shared publicly, not
+   referenced anywhere in the UI); every other visitor goes through the
+   normal Stripe Checkout paywall exactly as before. Same one-time-query-
+   param-then-clean-the-URL pattern as the existing ?stats install-counter
+   view and the Stripe Checkout return flow below. */
+const OWNER_UNLOCK_TOKEN = "3217fd6b43bd85a3a9a53a6cada59bbb832343a25c94c161";
+const OWNER_UNLOCK_KEY = "blare_owner_unlocked_v1";
+
 /* ---------------- State ---------------- */
 let alarms = loadAlarms();
 let streak = loadStreak();
@@ -87,6 +126,19 @@ let youtubePlayer = null;
 let youtubePlaybackTimeoutId = null;
 let ytIframeApiReady = false;
 window.onYouTubeIframeAPIReady = function () { ytIframeApiReady = true; };
+
+let spotifyAccessToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || null;
+let spotifyTokenExpiresAt = 0; // set once we actually fetch/refresh a token
+let spotifyPlaylistsCache = null;
+let spotifyPlayer = null;
+let spotifyDeviceId = null;
+let spotifyPlaybackTimeoutId = null;
+let spotifySdkReady = false;
+window.onSpotifyWebPlaybackSDKReady = function () { spotifySdkReady = true; };
+
+let appleMusicInstance = null;
+let appleMusicPlaylistsCache = null;
+let applePlaybackTimeoutId = null;
 
 /* ---------------- Storage ---------------- */
 function loadAlarms() {
@@ -170,6 +222,16 @@ const youtubeConnectBtn = document.getElementById("youtube-connect-btn");
 const youtubeNotConnectedEl = document.getElementById("youtube-not-connected");
 const youtubeConnectedEl = document.getElementById("youtube-connected");
 const youtubePlaylistSelect = document.getElementById("youtube-playlist-select");
+const spotifyConnectRow = document.getElementById("spotify-connect-row");
+const spotifyConnectBtn = document.getElementById("spotify-connect-btn");
+const spotifyNotConnectedEl = document.getElementById("spotify-not-connected");
+const spotifyConnectedEl = document.getElementById("spotify-connected");
+const spotifyPlaylistSelect = document.getElementById("spotify-playlist-select");
+const appleConnectRow = document.getElementById("apple-connect-row");
+const appleConnectBtn = document.getElementById("apple-connect-btn");
+const appleNotConnectedEl = document.getElementById("apple-not-connected");
+const appleConnectedEl = document.getElementById("apple-connected");
+const applePlaylistSelect = document.getElementById("apple-playlist-select");
 const dayToggles = document.querySelectorAll(".day-btn");
 const previewSoundBtn = document.getElementById("preview-sound-btn");
 
@@ -349,7 +411,8 @@ function buildMetaText(alarm) {
   }
   const amount = alarm.stakeAmountCents || 0;
   if (amount > 0) parts.push(`💵 $${(amount / 100).toFixed(0)} staked`);
-  if (alarm.wakeSource === "youtube") parts.push("🎵 YouTube playlist");
+  const wakeSourceLabels = { youtube: "YouTube", spotify: "Spotify", apple: "Apple Music" };
+  if (wakeSourceLabels[alarm.wakeSource]) parts.push(`🎵 ${wakeSourceLabels[alarm.wakeSource]} playlist`);
   return parts.join(" · ");
 }
 
@@ -430,12 +493,20 @@ function openEditScreen(alarmId) {
   stakesAmountSelect.value = String(alarm ? (alarm.stakeAmountCents || 0) : 0);
   updateStakesLock(); // also refreshes dismiss-mode lock/visibility + wake-source lock/visibility
 
-  // If this alarm already has a saved YouTube playlist and we're already
-  // connected, make sure it shows as selected even before a fresh
-  // playlists.list fetch finishes (or if it never runs again this session).
+  // If this alarm already has a saved playlist and we're already connected
+  // to that source, make sure it shows as selected even before a fresh
+  // playlists fetch finishes (or if it never runs again this session).
   if (alarm && alarm.wakeSource === "youtube" && youtubeAccessToken) {
     if (youtubePlaylistsCache) renderYoutubePlaylistOptions();
     else loadYoutubePlaylists();
+  }
+  if (alarm && alarm.wakeSource === "spotify" && spotifyAccessToken) {
+    if (spotifyPlaylistsCache) renderSpotifyPlaylistOptions();
+    else loadSpotifyPlaylists();
+  }
+  if (alarm && alarm.wakeSource === "apple" && appleMusicInstance && appleMusicInstance.isAuthorized) {
+    if (appleMusicPlaylistsCache) renderAppleMusicPlaylistOptions();
+    else loadAppleMusicPlaylists();
   }
 
   const activeDays = alarm ? (alarm.days || []) : [];
@@ -474,10 +545,14 @@ function saveAlarmFromEdit() {
   const stakeAmountCents = (subscribed && STAKE_TIERS_CENTS.includes(chosenStakeCents)) ? chosenStakeCents : 0;
 
   const chosenWakeSource = wakeSourceSelect.value;
-  const wakeSource = (chosenWakeSource === "youtube" && subscribed && youtubePlaylistSelect.value)
-    ? "youtube"
+  const wakeSourcePlaylistSelects = { youtube: youtubePlaylistSelect, spotify: spotifyPlaylistSelect, apple: applePlaylistSelect };
+  const chosenPlaylistSelect = wakeSourcePlaylistSelects[chosenWakeSource];
+  const wakeSource = (chosenPlaylistSelect && subscribed && chosenPlaylistSelect.value)
+    ? chosenWakeSource
     : "builtin";
   const youtubePlaylistId = wakeSource === "youtube" ? youtubePlaylistSelect.value : null;
+  const spotifyPlaylistId = wakeSource === "spotify" ? spotifyPlaylistSelect.value : null;
+  const applePlaylistId = wakeSource === "apple" ? applePlaylistSelect.value : null;
 
   const data = {
     hour, minute,
@@ -491,6 +566,8 @@ function saveAlarmFromEdit() {
     stakeAmountCents,
     wakeSource,
     youtubePlaylistId,
+    spotifyPlaylistId,
+    applePlaylistId,
     days: getSelectedDays(),
     enabled: true,
   };
@@ -594,6 +671,8 @@ function triggerRing(alarm) {
   stopReflexGame();
   stopBalanceChallenge();
   stopYoutubePlayback();
+  stopSpotifyPlayback();
+  stopAppleMusicPlayback();
 
   snoozeBtn.classList.toggle("hidden", alarm.snoozeMinutes === 0);
 
@@ -609,6 +688,10 @@ function triggerRing(alarm) {
   showScreen(ringingScreen);
   if (alarm.wakeSource === "youtube" && alarm.youtubePlaylistId) {
     playYoutubeWakeSound(alarm);
+  } else if (alarm.wakeSource === "spotify" && alarm.spotifyPlaylistId) {
+    playSpotifyWakeSound(alarm);
+  } else if (alarm.wakeSource === "apple" && alarm.applePlaylistId) {
+    playAppleMusicWakeSound(alarm);
   } else {
     AlarmSound.play(alarm.sound, alarm.ramp);
   }
@@ -648,6 +731,8 @@ function releaseWakeLock() {
 function endRinging() {
   AlarmSound.stop();
   stopYoutubePlayback();
+  stopSpotifyPlayback();
+  stopAppleMusicPlayback();
   stopVibration();
   releaseWakeLock();
   stopReflexGame();
@@ -1334,13 +1419,16 @@ dismissModeSelect.addEventListener("change", () => {
 });
 
 wakeSourceSelect.addEventListener("change", () => {
-  if (wakeSourceSelect.value === "youtube" && !subscribed) {
+  const pickedPlaylistSource = ["youtube", "spotify", "apple"].includes(wakeSourceSelect.value);
+  if (pickedPlaylistSource && !subscribed) {
     wakeSourceSelect.value = "builtin";
     showToast("Subscribe in Settings to unlock playlist wake-up sounds.");
   }
   updateWakeSourceUI();
 });
 youtubeConnectBtn.addEventListener("click", connectYoutube);
+spotifyConnectBtn.addEventListener("click", connectSpotify);
+appleConnectBtn.addEventListener("click", connectAppleMusic);
 
 subscribeBtn.addEventListener("click", startCheckout);
 
@@ -1468,16 +1556,30 @@ function updateDismissModeUI() {
 }
 
 function updateWakeSourceUI() {
-  const youtubeOpt = wakeSourceSelect.querySelector('option[value="youtube"]');
-  if (youtubeOpt) youtubeOpt.disabled = !subscribed;
+  for (const value of ["youtube", "spotify", "apple"]) {
+    const opt = wakeSourceSelect.querySelector(`option[value="${value}"]`);
+    if (opt) opt.disabled = !subscribed;
+  }
   wakeSourceLockedHint.classList.toggle("hidden", subscribed);
 
   const source = wakeSourceSelect.value;
   youtubeConnectRow.classList.toggle("hidden", source !== "youtube");
+  spotifyConnectRow.classList.toggle("hidden", source !== "spotify");
+  appleConnectRow.classList.toggle("hidden", source !== "apple");
+
   if (source === "youtube") {
     youtubeNotConnectedEl.classList.toggle("hidden", !!youtubeAccessToken);
     youtubeConnectedEl.classList.toggle("hidden", !youtubeAccessToken);
     if (youtubeAccessToken && !youtubePlaylistsCache) loadYoutubePlaylists();
+  } else if (source === "spotify") {
+    spotifyNotConnectedEl.classList.toggle("hidden", !!spotifyAccessToken);
+    spotifyConnectedEl.classList.toggle("hidden", !spotifyAccessToken);
+    if (spotifyAccessToken && !spotifyPlaylistsCache) loadSpotifyPlaylists();
+  } else if (source === "apple") {
+    const authorized = !!(appleMusicInstance && appleMusicInstance.isAuthorized);
+    appleNotConnectedEl.classList.toggle("hidden", authorized);
+    appleConnectedEl.classList.toggle("hidden", !authorized);
+    if (authorized && !appleMusicPlaylistsCache) loadAppleMusicPlaylists();
   }
 }
 
@@ -1601,8 +1703,339 @@ function stopYoutubePlayback() {
   if (youtubePlayer) { try { youtubePlayer.stopVideo(); } catch (e) {} }
 }
 
+/* ---------------- Wake-Up Playlist: Spotify (PKCE OAuth + Web Playback SDK) ---------------- */
+function generateRandomString(length) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  const randomValues = crypto.getRandomValues(new Uint8Array(length));
+  for (let i = 0; i < length; i++) result += chars[randomValues[i] % chars.length];
+  return result;
+}
+
+async function sha256Base64Url(input) {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  let binary = "";
+  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Spotify's app dashboard has to have this exact URL registered as a Redirect URI.
+function spotifyRedirectUri() {
+  return location.origin + location.pathname;
+}
+
+async function connectSpotify() {
+  const verifier = generateRandomString(64);
+  sessionStorage.setItem(SPOTIFY_VERIFIER_KEY, verifier);
+  const challenge = await sha256Base64Url(verifier);
+  const params = new URLSearchParams({
+    client_id: SPOTIFY_CLIENT_ID,
+    response_type: "code",
+    redirect_uri: spotifyRedirectUri(),
+    scope: SPOTIFY_SCOPES,
+    code_challenge_method: "S256",
+    code_challenge: challenge,
+    state: "spotify_auth",
+  });
+  window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
+}
+
+// Called once at startup — Spotify's own redirect back here carries ?code&state,
+// distinct from Stripe Checkout's ?checkout&session_id so the two never collide.
+async function checkSpotifyRedirect() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("state") !== "spotify_auth" || !params.get("code")) return;
+  const code = params.get("code");
+  const verifier = sessionStorage.getItem(SPOTIFY_VERIFIER_KEY);
+  history.replaceState(null, "", location.pathname);
+  sessionStorage.removeItem(SPOTIFY_VERIFIER_KEY);
+  if (!verifier) return;
+  try {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: spotifyRedirectUri(),
+      client_id: SPOTIFY_CLIENT_ID,
+      code_verifier: verifier,
+    });
+    const res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) throw new Error(`token exchange failed: ${res.status}`);
+    applySpotifyTokenResponse(await res.json());
+    showToast("Spotify connected.");
+    updateWakeSourceUI();
+  } catch (e) {
+    showToast("Couldn't connect your Spotify account.");
+  }
+}
+
+function applySpotifyTokenResponse(data) {
+  spotifyAccessToken = data.access_token;
+  spotifyTokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+  localStorage.setItem(SPOTIFY_TOKEN_KEY, spotifyAccessToken);
+  if (data.refresh_token) localStorage.setItem(SPOTIFY_REFRESH_KEY, data.refresh_token);
+  spotifyPlaylistsCache = null;
+}
+
+// Access tokens last ~1hr; refreshing (rather than session-only, like YouTube's
+// token) means a saved alarm can actually still play at 6am without a fresh sign-in.
+async function ensureFreshSpotifyToken() {
+  if (spotifyAccessToken && Date.now() < spotifyTokenExpiresAt - 30000) return spotifyAccessToken;
+  const refreshToken = localStorage.getItem(SPOTIFY_REFRESH_KEY);
+  if (!refreshToken) return spotifyAccessToken;
+  try {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: SPOTIFY_CLIENT_ID,
+    });
+    const res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) throw new Error(`refresh failed: ${res.status}`);
+    applySpotifyTokenResponse(await res.json());
+  } catch (e) {
+    // fall through with whatever token we had — the next API call will just fail cleanly
+  }
+  return spotifyAccessToken;
+}
+
+async function loadSpotifyPlaylists() {
+  if (!spotifyAccessToken) return;
+  spotifyPlaylistSelect.innerHTML = '<option value="">Loading playlists…</option>';
+  try {
+    const token = await ensureFreshSpotifyToken();
+    const res = await fetch("https://api.spotify.com/v1/me/playlists?limit=50", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`playlists fetch failed: ${res.status}`);
+    const data = await res.json();
+    spotifyPlaylistsCache = [
+      { id: "liked", title: "Liked Songs" },
+      ...(data.items || []).map(item => ({ id: item.id, title: item.name })),
+    ];
+    renderSpotifyPlaylistOptions();
+  } catch (e) {
+    spotifyPlaylistsCache = null;
+    spotifyPlaylistSelect.innerHTML = '<option value="">Couldn’t load playlists — try reconnecting</option>';
+  }
+}
+
+function renderSpotifyPlaylistOptions() {
+  spotifyPlaylistSelect.innerHTML = "";
+  if (!spotifyPlaylistsCache || spotifyPlaylistsCache.length === 0) {
+    spotifyPlaylistSelect.innerHTML = '<option value="">No playlists found</option>';
+    return;
+  }
+  for (const pl of spotifyPlaylistsCache) {
+    const opt = document.createElement("option");
+    opt.value = pl.id;
+    opt.textContent = pl.title;
+    spotifyPlaylistSelect.appendChild(opt);
+  }
+  const alarm = editingAlarmId ? alarms.find(a => a.id === editingAlarmId) : null;
+  if (alarm && alarm.spotifyPlaylistId) {
+    const exists = spotifyPlaylistsCache.some(pl => pl.id === alarm.spotifyPlaylistId);
+    if (!exists) {
+      const opt = document.createElement("option");
+      opt.value = alarm.spotifyPlaylistId;
+      opt.textContent = "(previously selected playlist)";
+      spotifyPlaylistSelect.appendChild(opt);
+    }
+    spotifyPlaylistSelect.value = alarm.spotifyPlaylistId;
+  }
+}
+
+function ensureSpotifyPlayer() {
+  if (spotifyPlayer) return spotifyPlayer;
+  if (!spotifySdkReady || typeof Spotify === "undefined") return null;
+  spotifyPlayer = new Spotify.Player({
+    name: "Blare Alarm Clock",
+    getOAuthToken: (cb) => { ensureFreshSpotifyToken().then(token => cb(token)); },
+    volume: 1.0,
+  });
+  spotifyPlayer.addListener("ready", ({ device_id }) => { spotifyDeviceId = device_id; });
+  spotifyPlayer.addListener("not_ready", () => { spotifyDeviceId = null; });
+  spotifyPlayer.connect();
+  return spotifyPlayer;
+}
+
+async function fetchLikedSongUris(token) {
+  const res = await fetch("https://api.spotify.com/v1/me/tracks?limit=50", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.items || []).map(item => item.track.uri);
+}
+
+async function playSpotifyWakeSound(alarm) {
+  const player = ensureSpotifyPlayer();
+  if (!player) {
+    AlarmSound.play(alarm.sound, alarm.ramp);
+    return;
+  }
+  spotifyPlaybackTimeoutId = setTimeout(() => {
+    spotifyPlaybackTimeoutId = null;
+    stopSpotifyPlayback();
+    AlarmSound.play(alarm.sound, alarm.ramp);
+  }, SPOTIFY_PLAYBACK_TIMEOUT_MS);
+
+  try {
+    const token = await ensureFreshSpotifyToken();
+    // The Connect device can take a moment to register after connect() — poll briefly.
+    for (let i = 0; i < 15 && !spotifyDeviceId; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!spotifyDeviceId) return; // the fallback timeout above will fire
+
+    const body = alarm.spotifyPlaylistId === "liked"
+      ? { uris: await fetchLikedSongUris(token) }
+      : { context_uri: `spotify:playlist:${alarm.spotifyPlaylistId}` };
+
+    const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${spotifyDeviceId}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.ok && spotifyPlaybackTimeoutId) {
+      clearTimeout(spotifyPlaybackTimeoutId);
+      spotifyPlaybackTimeoutId = null;
+    }
+  } catch (e) {
+    // the fallback timeout above handles it
+  }
+}
+
+function stopSpotifyPlayback() {
+  if (spotifyPlaybackTimeoutId) { clearTimeout(spotifyPlaybackTimeoutId); spotifyPlaybackTimeoutId = null; }
+  if (spotifyPlayer) { try { spotifyPlayer.pause(); } catch (e) {} }
+}
+
+/* ---------------- Wake-Up Playlist: Apple Music (MusicKit JS) ---------------- */
+function ensureAppleMusicInstance() {
+  if (appleMusicInstance) return appleMusicInstance;
+  if (typeof MusicKit === "undefined") return null;
+  try {
+    MusicKit.configure({
+      developerToken: APPLE_MUSIC_DEVELOPER_TOKEN,
+      app: { name: "Blare Alarm Clock", build: "1.0.0" },
+    });
+    appleMusicInstance = MusicKit.getInstance();
+  } catch (e) {
+    appleMusicInstance = null;
+  }
+  return appleMusicInstance;
+}
+
+async function connectAppleMusic() {
+  const music = ensureAppleMusicInstance();
+  if (!music) {
+    showToast("Apple Music isn't ready yet — try again in a moment.");
+    return;
+  }
+  try {
+    await music.authorize();
+    updateWakeSourceUI();
+  } catch (e) {
+    showToast("Couldn't connect your Apple Music account.");
+  }
+}
+
+async function loadAppleMusicPlaylists() {
+  const music = ensureAppleMusicInstance();
+  if (!music || !music.isAuthorized) return;
+  applePlaylistSelect.innerHTML = '<option value="">Loading playlists…</option>';
+  try {
+    const result = await music.api.music("/v1/me/library/playlists", { limit: 50 });
+    const items = (result.data && result.data.data) || [];
+    appleMusicPlaylistsCache = items.map((item) => ({ id: item.id, title: item.attributes.name }));
+    renderAppleMusicPlaylistOptions();
+  } catch (e) {
+    appleMusicPlaylistsCache = null;
+    applePlaylistSelect.innerHTML = '<option value="">Couldn’t load playlists — try reconnecting</option>';
+  }
+}
+
+function renderAppleMusicPlaylistOptions() {
+  applePlaylistSelect.innerHTML = "";
+  if (!appleMusicPlaylistsCache || appleMusicPlaylistsCache.length === 0) {
+    applePlaylistSelect.innerHTML = '<option value="">No playlists found</option>';
+    return;
+  }
+  for (const pl of appleMusicPlaylistsCache) {
+    const opt = document.createElement("option");
+    opt.value = pl.id;
+    opt.textContent = pl.title;
+    applePlaylistSelect.appendChild(opt);
+  }
+  const alarm = editingAlarmId ? alarms.find(a => a.id === editingAlarmId) : null;
+  if (alarm && alarm.applePlaylistId) {
+    const exists = appleMusicPlaylistsCache.some(pl => pl.id === alarm.applePlaylistId);
+    if (!exists) {
+      const opt = document.createElement("option");
+      opt.value = alarm.applePlaylistId;
+      opt.textContent = "(previously selected playlist)";
+      applePlaylistSelect.appendChild(opt);
+    }
+    applePlaylistSelect.value = alarm.applePlaylistId;
+  }
+}
+
+async function playAppleMusicWakeSound(alarm) {
+  const music = ensureAppleMusicInstance();
+  if (!music || !music.isAuthorized) {
+    AlarmSound.play(alarm.sound, alarm.ramp);
+    return;
+  }
+  applePlaybackTimeoutId = setTimeout(() => {
+    applePlaybackTimeoutId = null;
+    stopAppleMusicPlayback();
+    AlarmSound.play(alarm.sound, alarm.ramp);
+  }, APPLE_MUSIC_PLAYBACK_TIMEOUT_MS);
+
+  try {
+    await music.setQueue({ playlist: alarm.applePlaylistId });
+    await music.play();
+    if (applePlaybackTimeoutId) { clearTimeout(applePlaybackTimeoutId); applePlaybackTimeoutId = null; }
+  } catch (e) {
+    // the fallback timeout above handles it
+  }
+}
+
+function stopAppleMusicPlayback() {
+  if (applePlaybackTimeoutId) { clearTimeout(applePlaybackTimeoutId); applePlaybackTimeoutId = null; }
+  if (appleMusicInstance) { try { appleMusicInstance.stop(); } catch (e) {} }
+}
+
+/* ---------------- Owner unlock ---------------- */
+function checkOwnerUnlock() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("owner") === OWNER_UNLOCK_TOKEN) {
+    localStorage.setItem(OWNER_UNLOCK_KEY, "1");
+    // Never leave the secret token sitting in the URL/history/referer headers.
+    params.delete("owner");
+    const rest = params.toString();
+    history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : ""));
+  }
+  return localStorage.getItem(OWNER_UNLOCK_KEY) === "1";
+}
+
 async function checkSubscriptionOnLoad() {
   renderStakesSettingsUI(true);
+
+  if (checkOwnerUnlock()) {
+    subscribed = true;
+    renderStakesSettingsUI(false);
+    updateStakesLock();
+    return;
+  }
 
   // Coming back from a successful Stripe Checkout redirect.
   const params = new URLSearchParams(location.search);
@@ -1719,3 +2152,4 @@ updateNextAlarmBanner();
 updateLiveClock();
 startCheckLoop();
 checkSubscriptionOnLoad();
+checkSpotifyRedirect();
