@@ -558,7 +558,9 @@ html, body {
   pointer-events: none;
   overflow: hidden;
 }
-#youtube-connected {
+#youtube-connected,
+#spotify-connected,
+#apple-connected {
   display: flex;
   flex-direction: column;
   gap: 8px;
