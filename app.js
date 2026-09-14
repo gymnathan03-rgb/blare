@@ -9,14 +9,39 @@ const SETTINGS_KEY = "blare_settings_v1";
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /* ---------------- Wake-Up Stakes ----------------
-   $2.99/mo subscription (Stripe Checkout) unlocks a $5 stake per alarm.
-   The hold is placed when the alarm actually rings, released on a clean
-   dismiss, and captured (charged) if you snooze a 3rd time or never
+   $2.99/mo subscription (Stripe Checkout) unlocks putting real money on
+   waking up. The hold is placed when the alarm actually rings, released on
+   a clean dismiss, and captured (charged) if you snooze a 3rd time or never
    resolve the alarm at all (server-side safety net for that last case).
-   Fixed at $5 for now — see plan doc for future higher tiers. */
+   Amount is chosen per-alarm from STAKE_TIERS_CENTS — the Worker validates
+   against the same allowlist server-side, since this moves real money. */
 const STAKES_API_BASE = "https://blare-stakes-worker.gymnathan03.workers.dev";
 const STAKES_CUSTOMER_KEY = "blare_stripe_customer_v1";
 const MAX_SNOOZES_BEFORE_CHARGE = 3;
+const STAKE_TIERS_CENTS = [500, 1000, 2000];
+
+/* ---------------- Balance Challenge ----------------
+   Subscriber-only alternative to the reflex game: balance a chosen kitchen
+   utensil above your head, verified on-device (nothing leaves the phone)
+   via a small object-detection model (coco-ssd) plus a face-detection model
+   (blazeface) to find where "above your head" actually is. You have to hold
+   it there for BALANCE_HOLD_MS continuous milliseconds — sitting up is
+   basically required to pull this off lying in bed. Only "spoon", "fork"
+   and "knife" are real coco-ssd classes; the rest of BALANCE_UTENSILS fall
+   back to a looser "something small held near/above the head" heuristic. */
+const BALANCE_HOLD_MS = 2500;
+const BALANCE_UTENSILS = {
+  spoon:        { label: "spoon",           cocoClass: "spoon" },
+  fork:         { label: "fork",            cocoClass: "fork" },
+  knife:        { label: "butter knife",    cocoClass: "knife" },
+  spatula:      { label: "spatula",         cocoClass: null },
+  whisk:        { label: "whisk",           cocoClass: null },
+  ladle:        { label: "ladle",           cocoClass: null },
+  tongs:        { label: "tongs",           cocoClass: null },
+  wooden_spoon: { label: "wooden spoon",    cocoClass: null },
+  peeler:       { label: "vegetable peeler", cocoClass: null },
+  spork:        { label: "spork",           cocoClass: null },
+};
 
 /* ---------------- State ---------------- */
 let alarms = loadAlarms();
@@ -101,19 +126,23 @@ const labelInput = document.getElementById("label-input");
 const soundSelect = document.getElementById("sound-select");
 const rampSelect = document.getElementById("ramp-select");
 const snoozeSelect = document.getElementById("snooze-select");
-const gameToggle = document.getElementById("game-toggle");
+const dismissModeSelect = document.getElementById("dismiss-mode-select");
+const dismissModeLockedHint = document.getElementById("dismiss-mode-locked-hint");
 const gameDifficultyRow = document.getElementById("game-difficulty-row");
 const gameDifficultySelect = document.getElementById("game-difficulty-select");
+const balanceUtensilRow = document.getElementById("balance-utensil-row");
+const balanceUtensilSelect = document.getElementById("balance-utensil-select");
 const dayToggles = document.querySelectorAll(".day-btn");
 const previewSoundBtn = document.getElementById("preview-sound-btn");
 
-const stakesToggle = document.getElementById("stakes-toggle");
+const stakesAmountSelect = document.getElementById("stakes-amount-select");
 const stakesLockedHint = document.getElementById("stakes-locked-hint");
 const stakesLoadingEl = document.getElementById("stakes-loading");
 const stakesNotSubscribedEl = document.getElementById("stakes-not-subscribed");
 const stakesSubscribedEl = document.getElementById("stakes-subscribed");
 const subscribeBtn = document.getElementById("subscribe-btn");
 const stakesBadge = document.getElementById("stakes-badge");
+const balanceLockedBadge = document.getElementById("balance-locked-badge");
 
 const ringingInfo = document.getElementById("ringing-info");
 const ringingTime = document.getElementById("ringing-time");
@@ -125,6 +154,12 @@ const reflexGame = document.getElementById("reflex-game");
 const reflexStreakEl = document.getElementById("reflex-streak");
 const reflexFeedbackEl = document.getElementById("reflex-feedback");
 const reflexZone = document.getElementById("reflex-zone");
+
+const balanceGame = document.getElementById("balance-game");
+const balanceTitleEl = document.getElementById("balance-title");
+const balanceFeedbackEl = document.getElementById("balance-feedback");
+const balanceProgressFill = document.getElementById("balance-progress-fill");
+const balanceVideo = document.getElementById("balance-video");
 
 const toastEl = document.getElementById("toast");
 
@@ -270,7 +305,12 @@ function buildMetaText(alarm) {
     parts.push("Once");
   }
   parts.push(SOUND_NAMES[alarm.sound] || alarm.sound);
-  if (alarm.stakesEnabled) parts.push("💵 $5 staked");
+  if (alarm.dismissMode === "balance") {
+    const utensil = BALANCE_UTENSILS[alarm.balanceUtensil] || BALANCE_UTENSILS.spoon;
+    parts.push(`🥄 Balance a ${utensil.label}`);
+  }
+  const amount = alarm.stakeAmountCents || 0;
+  if (amount > 0) parts.push(`💵 $${(amount / 100).toFixed(0)} staked`);
   return parts.join(" · ");
 }
 
@@ -336,12 +376,18 @@ function openEditScreen(alarmId) {
   soundSelect.value = alarm ? alarm.sound : "siren";
   rampSelect.value = alarm ? String(alarm.ramp) : "15";
   snoozeSelect.value = alarm ? String(alarm.snoozeMinutes) : "5";
-  gameToggle.checked = alarm ? alarm.requireGame : true;
-  gameDifficultySelect.value = alarm ? alarm.difficulty : "medium";
-  gameDifficultyRow.classList.toggle("hidden", !gameToggle.checked);
 
-  stakesToggle.checked = alarm ? !!alarm.stakesEnabled : false;
-  updateStakesToggleLock();
+  // Migrate legacy alarms (pre-dismissMode) so nothing regresses:
+  // requireGame: true -> "reflex", requireGame: false -> "none".
+  const dismissMode = alarm
+    ? (alarm.dismissMode || (alarm.requireGame === false ? "none" : "reflex"))
+    : "reflex";
+  dismissModeSelect.value = dismissMode;
+  gameDifficultySelect.value = alarm ? (alarm.difficulty || "medium") : "medium";
+  balanceUtensilSelect.value = alarm ? (alarm.balanceUtensil || "spoon") : "spoon";
+
+  stakesAmountSelect.value = String(alarm ? (alarm.stakeAmountCents || 0) : 0);
+  updateStakesLock(); // also refreshes dismiss-mode lock/visibility
 
   const activeDays = alarm ? (alarm.days || []) : [];
   dayToggles.forEach(btn => {
@@ -369,15 +415,25 @@ function saveAlarmFromEdit() {
     return;
   }
 
+  // A locked (subscriber-only) option can't have been genuinely selected by
+  // a non-subscriber — updateDismissModeUI()/updateStakesLock() keep the
+  // controls themselves from offering these, but re-check here too since
+  // this is the actual save path or write, not just a display gate.
+  const chosenDismissMode = dismissModeSelect.value;
+  const dismissMode = (chosenDismissMode === "balance" && !subscribed) ? "reflex" : chosenDismissMode;
+  const chosenStakeCents = Number(stakesAmountSelect.value) || 0;
+  const stakeAmountCents = (subscribed && STAKE_TIERS_CENTS.includes(chosenStakeCents)) ? chosenStakeCents : 0;
+
   const data = {
     hour, minute,
     label: labelInput.value.trim(),
     sound: soundSelect.value,
     ramp: rampSelect.value === "instant" ? 0 : Number(rampSelect.value),
     snoozeMinutes: Number(snoozeSelect.value),
-    requireGame: gameToggle.checked,
+    dismissMode,
     difficulty: gameDifficultySelect.value,
-    stakesEnabled: subscribed && stakesToggle.checked,
+    balanceUtensil: balanceUtensilSelect.value,
+    stakeAmountCents,
     days: getSelectedDays(),
     enabled: true,
   };
@@ -479,13 +535,18 @@ function triggerRing(alarm) {
   ringingInfo.classList.remove("hidden");
   reflexGame.classList.add("hidden");
   stopReflexGame();
+  stopBalanceChallenge();
 
   snoozeBtn.classList.toggle("hidden", alarm.snoozeMinutes === 0);
 
   snoozeCount = 0;
   activeStakeIntentId = null;
   stakesBadge.classList.add("hidden");
-  if (alarm.stakesEnabled) startStakeHold(alarm);
+  balanceLockedBadge.classList.add("hidden");
+  if (alarm.stakeAmountCents > 0) {
+    stakesBadge.textContent = `💵 $${(alarm.stakeAmountCents / 100).toFixed(0)} on the line`;
+    startStakeHold(alarm);
+  }
 
   showScreen(ringingScreen);
   AlarmSound.play(alarm.sound, alarm.ramp);
@@ -527,6 +588,7 @@ function endRinging() {
   stopVibration();
   releaseWakeLock();
   stopReflexGame();
+  stopBalanceChallenge();
   activeRingingAlarm = null;
   showScreen(mainScreen);
   renderAlarmList();
@@ -538,8 +600,9 @@ function handleSnooze() {
 
   snoozeCount++;
   if (activeStakeIntentId && snoozeCount >= MAX_SNOOZES_BEFORE_CHARGE) {
+    const amount = activeRingingAlarm.stakeAmountCents || 0;
     captureStakeIfAny();
-    showToast("Charged $5 — you snoozed 3 times. Dismiss to stop the alarm.");
+    showToast(`Charged $${(amount / 100).toFixed(0)} — you snoozed 3 times. Dismiss to stop the alarm.`);
     snoozeBtn.classList.add("hidden"); // no more snoozing; they still have to dismiss
     return;
   }
@@ -552,7 +615,10 @@ function handleSnooze() {
 
 function handleDismissRequest() {
   if (!activeRingingAlarm) return;
-  if (activeRingingAlarm.requireGame) {
+  const mode = activeRingingAlarm.dismissMode || "reflex";
+  if (mode === "balance") {
+    startBalanceChallenge(activeRingingAlarm);
+  } else if (mode === "reflex") {
     startReflexGame(activeRingingAlarm.difficulty);
   } else {
     handleWakeSuccess();
@@ -659,6 +725,158 @@ function onReflexTimeout() {
   updateReflexStreakText();
   reflexFeedbackEl.textContent = "Missed it — streak reset.";
   spawnReflexTarget();
+}
+
+/* ---------------- Balance Challenge (camera, on-device) ----------------
+   Models are loaded once and cached for the rest of the session — repeat
+   alarms don't re-download anything. Detection runs entirely on-device via
+   the TensorFlow.js scripts in index.html; nothing captured ever leaves
+   the phone. Camera-permission or model-load failure always falls back to
+   the reflex game rather than leaving an alarm impossible to dismiss. */
+let balanceCocoModel = null;
+let balanceFaceModel = null;
+let balanceModelsLoading = null;
+let balanceStream = null;
+let balanceLoopId = null;
+let balanceHeldStartTs = null;
+
+async function loadBalanceModels() {
+  if (balanceCocoModel && balanceFaceModel) return true;
+  if (balanceModelsLoading) return balanceModelsLoading;
+  balanceModelsLoading = (async () => {
+    if (typeof cocoSsd === "undefined" || typeof blazeface === "undefined" || typeof tf === "undefined") {
+      throw new Error("detection scripts not loaded");
+    }
+    const [coco, face] = await Promise.all([
+      cocoSsd.load({ base: "lite_mobilenet_v2" }),
+      blazeface.load(),
+    ]);
+    balanceCocoModel = coco;
+    balanceFaceModel = face;
+    return true;
+  })();
+  try {
+    return await balanceModelsLoading;
+  } finally {
+    balanceModelsLoading = null;
+  }
+}
+
+async function startBalanceChallenge(alarm) {
+  const utensil = BALANCE_UTENSILS[alarm.balanceUtensil] || BALANCE_UTENSILS.spoon;
+  ringingInfo.classList.add("hidden");
+  reflexGame.classList.add("hidden");
+  balanceGame.classList.remove("hidden");
+  balanceTitleEl.textContent = `Balance a ${utensil.label} on your head`;
+  balanceFeedbackEl.textContent = "Getting the camera ready…";
+  balanceProgressFill.style.width = "0%";
+  balanceHeldStartTs = null;
+
+  try {
+    balanceStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+    balanceVideo.srcObject = balanceStream;
+    await balanceVideo.play();
+    balanceFeedbackEl.textContent = "Loading…";
+    await loadBalanceModels();
+  } catch (e) {
+    balanceFallbackToReflex(alarm);
+    return;
+  }
+
+  balanceFeedbackEl.textContent = `Sit up and hold the ${utensil.label} above your head…`;
+  runBalanceDetectionLoop(utensil);
+}
+
+function balanceFallbackToReflex(alarm) {
+  stopBalanceChallenge();
+  balanceLockedBadge.classList.remove("hidden");
+  showToast("Camera unavailable — using the reflex test instead.");
+  startReflexGame(alarm.difficulty);
+}
+
+function runBalanceDetectionLoop(utensil) {
+  const tick = async () => {
+    if (!activeRingingAlarm || balanceGame.classList.contains("hidden")) return;
+    try {
+      const [predictions, faces] = await Promise.all([
+        balanceCocoModel.detect(balanceVideo),
+        balanceFaceModel.estimateFaces(balanceVideo, false),
+      ]);
+      const held = evaluateBalanceFrame(predictions, faces, utensil);
+      updateBalanceProgress(held);
+    } catch (e) {
+      // A single bad frame shouldn't kill the challenge — just skip it.
+    }
+    balanceLoopId = setTimeout(tick, 180);
+  };
+  tick();
+}
+
+function evaluateBalanceFrame(predictions, faces, utensil) {
+  if (!faces || faces.length === 0) return false;
+  const face = faces[0];
+  // blazeface gives [x, y] corners for topLeft/bottomRight.
+  const [fx1, fy1] = face.topLeft;
+  const [fx2, fy2] = face.bottomRight;
+  const faceWidth = fx2 - fx1;
+  const faceHeight = fy2 - fy1;
+  const faceCenterX = (fx1 + fx2) / 2;
+
+  // The "above your head" zone: centered on the face horizontally, spanning
+  // from just above the hairline up to roughly a head-and-a-half higher.
+  const zone = {
+    xMin: faceCenterX - faceWidth * 0.9,
+    xMax: faceCenterX + faceWidth * 0.9,
+    yMin: fy1 - faceHeight * 1.6,
+    yMax: fy1 - faceHeight * 0.1,
+  };
+
+  const inZone = (box) => {
+    const [x, y, w, h] = box; // coco-ssd bbox: [x, y, width, height]
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    return cx >= zone.xMin && cx <= zone.xMax && cy >= zone.yMin && cy <= zone.yMax;
+  };
+
+  for (const pred of predictions) {
+    if (pred.class === "person") continue;
+    if (utensil.cocoClass) {
+      if (pred.class === utensil.cocoClass && pred.score > 0.4 && inZone(pred.bbox)) return true;
+    } else {
+      // No exact coco-ssd class for this utensil — fall back to "is
+      // anything at all being held up there" as a looser proxy.
+      if (pred.score > 0.35 && inZone(pred.bbox)) return true;
+    }
+  }
+  return false;
+}
+
+function updateBalanceProgress(held) {
+  if (held) {
+    if (!balanceHeldStartTs) balanceHeldStartTs = performance.now();
+    const elapsed = performance.now() - balanceHeldStartTs;
+    const pct = Math.min(100, (elapsed / BALANCE_HOLD_MS) * 100);
+    balanceProgressFill.style.width = pct + "%";
+    balanceFeedbackEl.textContent = "Hold it steady…";
+    if (elapsed >= BALANCE_HOLD_MS) {
+      balanceFeedbackEl.textContent = "Balanced! You're up.";
+      handleWakeSuccess();
+    }
+  } else {
+    balanceHeldStartTs = null;
+    balanceProgressFill.style.width = "0%";
+  }
+}
+
+function stopBalanceChallenge() {
+  if (balanceLoopId) { clearTimeout(balanceLoopId); balanceLoopId = null; }
+  if (balanceStream) {
+    balanceStream.getTracks().forEach(t => t.stop());
+    balanceStream = null;
+  }
+  balanceHeldStartTs = null;
+  balanceGame.classList.add("hidden");
+  balanceProgressFill.style.width = "0%";
 }
 
 /* ---------------- Sound engine (Web Audio API, no external files) ---------------- */
@@ -1041,8 +1259,15 @@ dayToggles.forEach(btn => {
   btn.addEventListener("click", () => btn.classList.toggle("active"));
 });
 
-gameToggle.addEventListener("change", () => {
-  gameDifficultyRow.classList.toggle("hidden", !gameToggle.checked);
+dismissModeSelect.addEventListener("change", () => {
+  // A non-subscriber can still click into "balance" in the dropdown itself
+  // (browsers don't support disabling a single <option> from being clicked
+  // in every UA reliably) — bounce it back and nudge them at Settings.
+  if (dismissModeSelect.value === "balance" && !subscribed) {
+    dismissModeSelect.value = "reflex";
+    showToast("Subscribe in Settings to unlock the Balance Challenge.");
+  }
+  updateDismissModeUI();
 });
 
 subscribeBtn.addEventListener("click", startCheckout);
@@ -1150,10 +1375,23 @@ function renderStakesSettingsUI(loading) {
   stakesSubscribedEl.classList.toggle("hidden", loading || !subscribed);
 }
 
-function updateStakesToggleLock() {
-  stakesToggle.disabled = !subscribed;
+function updateStakesLock() {
   stakesLockedHint.classList.toggle("hidden", subscribed);
-  if (!subscribed) stakesToggle.checked = false;
+  for (const opt of stakesAmountSelect.options) {
+    if (opt.value !== "0") opt.disabled = !subscribed;
+  }
+  if (!subscribed) stakesAmountSelect.value = "0";
+  updateDismissModeUI();
+}
+
+function updateDismissModeUI() {
+  const balanceOpt = dismissModeSelect.querySelector('option[value="balance"]');
+  if (balanceOpt) balanceOpt.disabled = !subscribed;
+  dismissModeLockedHint.classList.toggle("hidden", subscribed);
+
+  const mode = dismissModeSelect.value;
+  gameDifficultyRow.classList.toggle("hidden", mode !== "reflex");
+  balanceUtensilRow.classList.toggle("hidden", mode !== "balance");
 }
 
 async function checkSubscriptionOnLoad() {
@@ -1177,14 +1415,14 @@ async function checkSubscriptionOnLoad() {
     // Clean the query string so a refresh doesn't re-process the same session.
     history.replaceState(null, "", location.pathname);
     renderStakesSettingsUI(false);
-    updateStakesToggleLock();
+    updateStakesLock();
     return;
   }
 
   if (!stripeCustomerId) {
     subscribed = false;
     renderStakesSettingsUI(false);
-    updateStakesToggleLock();
+    updateStakesLock();
     return;
   }
 
@@ -1195,7 +1433,7 @@ async function checkSubscriptionOnLoad() {
     subscribed = false; // fail closed on the paywall check, but never blocks the alarm itself
   }
   renderStakesSettingsUI(false);
-  updateStakesToggleLock();
+  updateStakesLock();
 }
 
 async function startCheckout() {
@@ -1212,9 +1450,10 @@ async function startCheckout() {
 }
 
 async function startStakeHold(alarm) {
-  if (!alarm.stakesEnabled || !subscribed || !stripeCustomerId) return;
+  const amount = alarm.stakeAmountCents || 0;
+  if (!amount || !STAKE_TIERS_CENTS.includes(amount) || !subscribed || !stripeCustomerId) return;
   try {
-    const result = await stripeApi("/stake/start", { body: { customer_id: stripeCustomerId } });
+    const result = await stripeApi("/stake/start", { body: { customer_id: stripeCustomerId, amount } });
     activeStakeIntentId = result.paymentIntentId;
     stakesBadge.classList.remove("hidden");
   } catch (e) {
