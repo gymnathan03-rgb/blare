@@ -20,6 +20,16 @@ const STAKES_CUSTOMER_KEY = "blare_stripe_customer_v1";
 const MAX_SNOOZES_BEFORE_CHARGE = 3;
 const STAKE_TIERS_CENTS = [500, 1000, 2000];
 
+/* ---------------- Push notifications ----------------
+   Web Push (via the same Worker + a VAPID key pair) so an alarm can still
+   fire a system notification even if this tab (or the browser) is closed.
+   Free for every user, not tied to a Stripe subscription — the Worker
+   just needs a device_id to know who to wake up. Public key only; the
+   matching private key lives server-side as a Worker secret. */
+const VAPID_PUBLIC_KEY = "BNzC_dkyUzzxYXJq-FHUnTTplKy67E-j_TmeVj2QM-iVyyWhNh_yh_X0r2PxPWV8O_RygyXvjiMWWRXKWoc5l4I";
+const PUSH_DEVICE_ID_KEY = "blare_push_device_id_v1";
+const PUSH_ENABLED_KEY = "blare_push_enabled_v1";
+
 /* ---------------- Balance Challenge ----------------
    Subscriber-only alternative to the reflex game: balance a chosen kitchen
    utensil above your head, verified on-device (nothing leaves the phone)
@@ -119,6 +129,8 @@ let subscribed = false;
 let activeStakeIntentId = null; // payment_intent_id for the currently-ringing alarm's hold
 let snoozeCount = 0;
 
+let pushEnabled = localStorage.getItem(PUSH_ENABLED_KEY) === "1";
+
 let youtubeAccessToken = null; // session-only (Google's implicit-flow token), never persisted
 let youtubeTokenClient = null;
 let youtubePlaylistsCache = null;
@@ -151,6 +163,7 @@ function loadAlarms() {
 }
 function saveAlarms() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(alarms));
+  if (pushEnabled) syncAlarmsToServer();
 }
 
 function loadStreak() {
@@ -189,6 +202,8 @@ const settingsScreen = document.getElementById("settings-screen");
 const settingsBtn = document.getElementById("settings-btn");
 const closeSettingsBtn = document.getElementById("close-settings-btn");
 const use24hToggle = document.getElementById("use24h-toggle");
+const pushToggle = document.getElementById("push-toggle");
+const pushHint = document.getElementById("push-hint");
 
 const liveClock = document.getElementById("live-clock");
 const liveDate = document.getElementById("live-date");
@@ -1391,6 +1406,7 @@ deleteAlarmBtn.addEventListener("click", deleteCurrentAlarm);
 
 settingsBtn.addEventListener("click", () => {
   use24hToggle.checked = settings.use24Hour;
+  pushToggle.checked = pushEnabled;
   renderStakesSettingsUI(false);
   showScreen(settingsScreen);
 });
@@ -1401,6 +1417,15 @@ use24hToggle.addEventListener("change", () => {
   updateLiveClock();
   renderAlarmList();
   updateNextAlarmBanner();
+});
+pushToggle.addEventListener("change", async () => {
+  if (pushToggle.checked) {
+    const ok = await enablePushNotifications();
+    pushToggle.checked = ok;
+    if (!ok) pushHint.textContent = "Couldn't enable notifications — check your browser's notification permission and try again.";
+  } else {
+    await disablePushNotifications();
+  }
 });
 
 dayToggles.forEach(btn => {
@@ -1460,6 +1485,8 @@ document.addEventListener("visibilitychange", () => {
    Guarded with a sessionStorage flag: a CDN edge briefly serving mismatched
    copies of sw.js can otherwise make this fire repeatedly and reload-loop
    the page. At most one auto-reload happens per tab session. */
+if (pushEnabled) syncAlarmsToServer();
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").then((reg) => {
@@ -1527,6 +1554,105 @@ async function stripeApi(path, options) {
   });
   if (!res.ok) throw new Error(`Stakes API ${path} failed: ${res.status}`);
   return res.json();
+}
+
+/* ---------------- Push notifications ---------------- */
+function getOrCreatePushDeviceId() {
+  let id = localStorage.getItem(PUSH_DEVICE_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(PUSH_DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+// One upcoming fire time per enabled alarm — mirrors findNextAlarmTime's
+// per-alarm search, but collects all of them instead of just the soonest,
+// so the Worker has something to wake every alarm at, not just the next one.
+function computeAllNextFireTimes() {
+  const now = new Date();
+  const results = [];
+  for (const alarm of alarms) {
+    if (!alarm.enabled) continue;
+    for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
+      const candidate = new Date(now);
+      candidate.setDate(now.getDate() + dayOffset);
+      candidate.setHours(alarm.hour, alarm.minute, 0, 0);
+      if (candidate <= now) continue;
+
+      const dow = candidate.getDay();
+      const repeats = alarm.days && alarm.days.length > 0;
+      if (repeats && !alarm.days.includes(dow)) continue;
+      if (!repeats && dayOffset > 0) continue;
+
+      results.push({ id: alarm.id, time: candidate.getTime(), label: alarm.label || "" });
+      break;
+    }
+  }
+  return results;
+}
+
+async function syncAlarmsToServer() {
+  try {
+    await stripeApi("/push/sync-alarms", {
+      body: { device_id: getOrCreatePushDeviceId(), alarms: computeAllNextFireTimes() },
+    });
+  } catch (e) {
+    console.error("push alarm sync failed:", e);
+  }
+}
+
+async function enablePushNotifications() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return false;
+
+    const reg = await navigator.serviceWorker.ready;
+    let subscription = await reg.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+
+    await stripeApi("/push/subscribe", {
+      body: { device_id: getOrCreatePushDeviceId(), subscription: subscription.toJSON() },
+    });
+
+    pushEnabled = true;
+    localStorage.setItem(PUSH_ENABLED_KEY, "1");
+    await syncAlarmsToServer();
+    return true;
+  } catch (e) {
+    console.error("enablePushNotifications failed:", e);
+    return false;
+  }
+}
+
+async function disablePushNotifications() {
+  pushEnabled = false;
+  localStorage.setItem(PUSH_ENABLED_KEY, "0");
+  try {
+    await stripeApi("/push/unsubscribe", { body: { device_id: getOrCreatePushDeviceId() } });
+  } catch (e) {
+    console.error("disablePushNotifications failed:", e);
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const subscription = await reg.pushManager.getSubscription();
+    if (subscription) await subscription.unsubscribe();
+  } catch (e) {}
 }
 
 function renderStakesSettingsUI(loading) {
