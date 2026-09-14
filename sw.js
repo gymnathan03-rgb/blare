@@ -1,9 +1,9 @@
-const CACHE_NAME = "blare-v4";
+const CACHE_NAME = "blare-v5";
 const ASSETS = [
   "./",
   "./index.html",
-  "./style.css?v=1",
-  "./app.js?v=1",
+  "./style.css?v=2",
+  "./app.js?v=2",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",
@@ -43,6 +43,36 @@ self.addEventListener("fetch", (event) => {
         cached ||
         fetch(event.request).catch(() => caches.match("./index.html"))
       );
+    })
+  );
+});
+
+self.addEventListener("push", (event) => {
+  let data = { title: "Blare Alarm", body: "Time to wake up." };
+  try {
+    if (event.data) data = { ...data, ...event.data.json() };
+  } catch (e) {}
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "./icon-192.png",
+      badge: "./icon-192.png",
+      tag: data.alarmId ? `blare-alarm-${data.alarmId}` : "blare-alarm",
+      requireInteraction: true,
+      data: { alarmId: data.alarmId },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow("./index.html");
     })
   );
 });
