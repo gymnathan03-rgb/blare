@@ -114,13 +114,15 @@
         </select>
       </div>
 
-      <div class="field-group toggle-row">
-        <label class="field-label" for="game-toggle">Require reflex game to dismiss</label>
-        <label class="switch">
-          <input type="checkbox" id="game-toggle" checked>
-          <span class="slider"></span>
-        </label>
+      <div class="field-group" id="dismiss-mode-row">
+        <label class="field-label" for="dismiss-mode-select">How you prove you're awake</label>
+        <select id="dismiss-mode-select" class="select-input">
+          <option value="none">Just tap Dismiss</option>
+          <option value="reflex" selected>Reflex test (free)</option>
+          <option value="balance">Balance Challenge — utensil on your head (subscriber)</option>
+        </select>
       </div>
+      <p class="stakes-hint hidden" id="dismiss-mode-locked-hint">Subscribe in Settings to unlock the Balance Challenge.</p>
 
       <div class="field-group toggle-row" id="game-difficulty-row">
         <label class="field-label" for="game-difficulty-select">Reflex difficulty</label>
@@ -131,14 +133,32 @@
         </select>
       </div>
 
-      <div class="field-group toggle-row" id="stakes-toggle-row">
-        <label class="field-label" for="stakes-toggle">Bet $5 you'll wake up</label>
-        <label class="switch">
-          <input type="checkbox" id="stakes-toggle">
-          <span class="slider"></span>
-        </label>
+      <div class="field-group" id="stakes-toggle-row">
+        <label class="field-label" for="stakes-amount-select">Put money on waking up</label>
+        <select id="stakes-amount-select" class="select-input">
+          <option value="0">Off</option>
+          <option value="500">Bet $5</option>
+          <option value="1000">Bet $10</option>
+          <option value="2000">Bet $20</option>
+        </select>
       </div>
       <p class="stakes-hint hidden" id="stakes-locked-hint">Subscribe in Settings to unlock stakes.</p>
+
+      <div class="field-group toggle-row hidden" id="balance-utensil-row">
+        <label class="field-label" for="balance-utensil-select">Utensil</label>
+        <select id="balance-utensil-select" class="select-input small-select">
+          <option value="spoon">Spoon</option>
+          <option value="fork">Fork</option>
+          <option value="knife">Butter knife</option>
+          <option value="spatula">Spatula</option>
+          <option value="whisk">Whisk</option>
+          <option value="ladle">Ladle</option>
+          <option value="tongs">Tongs</option>
+          <option value="wooden_spoon">Wooden spoon</option>
+          <option value="peeler">Vegetable peeler</option>
+          <option value="spork">Spork</option>
+        </select>
+      </div>
 
       <button id="delete-alarm-btn" class="danger-btn hidden">Delete Alarm</button>
     </div>
@@ -168,12 +188,12 @@
         </div>
 
         <div id="stakes-not-subscribed" class="stakes-status hidden">
-          <p class="stakes-desc">Put $5 on the line each morning you set it. Subscribe to unlock.</p>
+          <p class="stakes-desc">Put $5, $10, or $20 on the line each morning, and unlock the Balance Challenge dismiss method. Subscribe to unlock both.</p>
           <button type="button" id="subscribe-btn" class="primary-btn">Subscribe — $2.99/mo</button>
         </div>
 
         <div id="stakes-subscribed" class="stakes-status hidden">
-          <p class="stakes-desc">✓ Subscribed — Stakes are available on your alarms.</p>
+          <p class="stakes-desc">✓ Subscribed — stakes tiers and the Balance Challenge are available on your alarms.</p>
         </div>
       </div>
     </div>
@@ -187,6 +207,7 @@
       <div class="ringing-time" id="ringing-time">00:00</div>
       <div class="ringing-label" id="ringing-label">Wake up!</div>
       <div id="stakes-badge" class="stakes-badge hidden">💵 $5 on the line</div>
+      <div id="balance-locked-badge" class="stakes-badge hidden">🥄 Camera unavailable — using reflex test instead</div>
 
       <div class="dismiss-panel">
         <button id="snooze-btn" class="snooze-btn">Snooze</button>
@@ -202,11 +223,28 @@
       </div>
       <div class="reflex-zone" id="reflex-zone"></div>
     </div>
+
+    <div id="balance-game" class="balance-game hidden">
+      <div class="balance-header">
+        <div class="balance-title" id="balance-title">Balance a spoon on your head</div>
+        <div class="balance-feedback" id="balance-feedback">Sit up and hold it steady…</div>
+        <div class="balance-progress-track"><div class="balance-progress-fill" id="balance-progress-fill"></div></div>
+      </div>
+      <div class="balance-camera-wrap">
+        <video id="balance-video" class="balance-video" playsinline autoplay muted></video>
+      </div>
+    </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>
 
   <button id="owner-stats-tab" class="owner-stats-tab hidden" type="button" title="Tap to refresh">Installs: —</button>
+
+  <!-- Balance Challenge: on-device object + face detection, loaded lazily only if a
+       subscriber actually picks the Balance Challenge dismiss mode (see app.js). -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js"></script>
 
   <script src="app.js?v=1"></script>
 </body>
