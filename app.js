@@ -62,7 +62,7 @@ const BALANCE_UTENSILS = {
    playlist, network hiccup, API never loaded), we fall back to the alarm's
    built-in sound — same fail-open pattern as the Balance Challenge camera
    fallback, so a music hiccup can never leave the alarm silent. */
-const YOUTUBE_OAUTH_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com";
+const YOUTUBE_OAUTH_CLIENT_ID = "360913376846-bnqvgo417cknrhthc2geteli2u506d26.apps.googleusercontent.com";
 const YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
 const YOUTUBE_PLAYBACK_TIMEOUT_MS = 6000;
 
