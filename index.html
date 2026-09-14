@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Blare Alarm Clock</title>
+<meta name="description" content="Blare is a free alarm clock web app. Set alarms with escalating volume, dismiss them with a quick reflex-tap game, and unlock a camera-based Balance Challenge, wake-up playlists from YouTube, Spotify, or Apple Music, and real-money Wake-Up Stakes as a subscriber.">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#14110a">
 <link rel="icon" href="icon-192.png" type="image/png">
@@ -23,6 +24,12 @@
       <button id="settings-btn" class="settings-gear" aria-label="Settings">⚙</button>
       <div class="clock" id="live-clock">00:00</div>
       <div class="date" id="live-date">Loading...</div>
+    </header>
+
+    <!-- Static, always-visible app description (not behind login, not JS-gated) -->
+    <header class="app-intro">
+      <h1 class="app-intro-title">Blare Alarm Clock</h1>
+      <p class="app-intro-desc">Blare is a free alarm clock that makes sure you actually get up. Set alarms with escalating volume and dismiss them with a quick reflex-tap game. Subscribers can also unlock a camera-based Balance Challenge, wake-up playlists from YouTube, Spotify, or Apple Music, and real-money Wake-Up Stakes.</p>
     </header>
 
     <div id="install-banner" class="install-banner hidden">
