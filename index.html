@@ -165,8 +165,8 @@
         <select id="wake-source-select" class="select-input">
           <option value="builtin" selected>Built-in alarm sound</option>
           <option value="youtube">YouTube playlist (subscriber)</option>
-          <option value="spotify" disabled>Spotify — coming soon (subscriber)</option>
-          <option value="apple" disabled>Apple Music — coming soon (subscriber)</option>
+          <option value="spotify">Spotify playlist (subscriber)</option>
+          <option value="apple">Apple Music playlist (subscriber)</option>
         </select>
       </div>
       <p class="stakes-hint hidden" id="wake-source-locked-hint">Subscribe in Settings to unlock playlist wake-up sounds.</p>
@@ -179,6 +179,28 @@
         <div id="youtube-connected" class="hidden">
           <select id="youtube-playlist-select" class="select-input"></select>
           <p class="stakes-hint">Only Public or Unlisted playlists will actually play here — YouTube blocks embedding Private playlists, including "Liked videos" unless you've changed its visibility. The built-in sound above is used as a backup if the playlist can't start.</p>
+        </div>
+      </div>
+
+      <div class="field-group hidden" id="spotify-connect-row">
+        <label class="field-label">Spotify playlist</label>
+        <div id="spotify-not-connected">
+          <button type="button" id="spotify-connect-btn" class="text-btn small">Connect Spotify account</button>
+        </div>
+        <div id="spotify-connected" class="hidden">
+          <select id="spotify-playlist-select" class="select-input"></select>
+          <p class="stakes-hint">Needs Spotify Premium on this device to actually play (Spotify's own restriction) — otherwise the built-in sound above is used as a backup.</p>
+        </div>
+      </div>
+
+      <div class="field-group hidden" id="apple-connect-row">
+        <label class="field-label">Apple Music playlist</label>
+        <div id="apple-not-connected">
+          <button type="button" id="apple-connect-btn" class="text-btn small">Connect Apple Music account</button>
+        </div>
+        <div id="apple-connected" class="hidden">
+          <select id="apple-playlist-select" class="select-input"></select>
+          <p class="stakes-hint">Needs an active Apple Music subscription on this device to actually play — otherwise the built-in sound above is used as a backup.</p>
         </div>
       </div>
 
@@ -210,7 +232,7 @@
         </div>
 
         <div id="stakes-not-subscribed" class="stakes-status hidden">
-          <p class="stakes-desc">Put $5, $10, or $20 on the line each morning, unlock the Balance Challenge dismiss method, and wake up to a YouTube playlist instead of an alarm tone. Subscribe to unlock all three.</p>
+          <p class="stakes-desc">Put $5, $10, or $20 on the line each morning, unlock the Balance Challenge dismiss method, and wake up to a YouTube, Spotify, or Apple Music playlist instead of an alarm tone. Subscribe to unlock all three.</p>
           <button type="button" id="subscribe-btn" class="primary-btn">Subscribe — $2.99/mo</button>
         </div>
 
@@ -276,6 +298,15 @@
        your playlists) + the YouTube IFrame Player API (to actually play one). -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://www.youtube.com/iframe_api"></script>
+
+  <!-- Wake-Up Playlist (Spotify): Web Playback SDK creates an in-browser
+       Spotify Connect device to play through (needs Premium on the account
+       that connects). Playlists are listed separately via the Web API. -->
+  <script src="https://sdk.scdn.co/spotify-player.js" async defer></script>
+
+  <!-- Wake-Up Playlist (Apple Music): MusicKit JS handles both auth and
+       playback against the listener's Apple Music library. -->
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async defer></script>
 
   <script src="app.js?v=1"></script>
 </body>
