@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Work+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 
@@ -232,6 +232,15 @@
         </label>
       </div>
 
+      <div class="field-group toggle-row">
+        <label class="field-label" for="push-toggle">Notify me even if this tab is closed</label>
+        <label class="switch">
+          <input type="checkbox" id="push-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="stakes-hint" id="push-hint">Sends a notification at each alarm time, even if Blare isn't open in a tab. Uses your browser's notification permission.</p>
+
       <div class="field-group stakes-settings">
         <label class="field-label">Wake-Up Stakes</label>
 
@@ -316,6 +325,6 @@
        playback against the listener's Apple Music library. -->
   <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async defer></script>
 
-  <script src="app.js?v=1"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>
