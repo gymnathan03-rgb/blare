@@ -160,6 +160,28 @@
         </select>
       </div>
 
+      <div class="field-group" id="wake-source-row">
+        <label class="field-label" for="wake-source-select">Wake-up sound source</label>
+        <select id="wake-source-select" class="select-input">
+          <option value="builtin" selected>Built-in alarm sound</option>
+          <option value="youtube">YouTube playlist (subscriber)</option>
+          <option value="spotify" disabled>Spotify — coming soon (subscriber)</option>
+          <option value="apple" disabled>Apple Music — coming soon (subscriber)</option>
+        </select>
+      </div>
+      <p class="stakes-hint hidden" id="wake-source-locked-hint">Subscribe in Settings to unlock playlist wake-up sounds.</p>
+
+      <div class="field-group hidden" id="youtube-connect-row">
+        <label class="field-label">YouTube playlist</label>
+        <div id="youtube-not-connected">
+          <button type="button" id="youtube-connect-btn" class="text-btn small">Connect YouTube account</button>
+        </div>
+        <div id="youtube-connected" class="hidden">
+          <select id="youtube-playlist-select" class="select-input"></select>
+          <p class="stakes-hint">Only Public or Unlisted playlists will actually play here — YouTube blocks embedding Private playlists, including "Liked videos" unless you've changed its visibility. The built-in sound above is used as a backup if the playlist can't start.</p>
+        </div>
+      </div>
+
       <button id="delete-alarm-btn" class="danger-btn hidden">Delete Alarm</button>
     </div>
   </div>
@@ -188,12 +210,12 @@
         </div>
 
         <div id="stakes-not-subscribed" class="stakes-status hidden">
-          <p class="stakes-desc">Put $5, $10, or $20 on the line each morning, and unlock the Balance Challenge dismiss method. Subscribe to unlock both.</p>
+          <p class="stakes-desc">Put $5, $10, or $20 on the line each morning, unlock the Balance Challenge dismiss method, and wake up to a YouTube playlist instead of an alarm tone. Subscribe to unlock all three.</p>
           <button type="button" id="subscribe-btn" class="primary-btn">Subscribe — $2.99/mo</button>
         </div>
 
         <div id="stakes-subscribed" class="stakes-status hidden">
-          <p class="stakes-desc">✓ Subscribed — stakes tiers and the Balance Challenge are available on your alarms.</p>
+          <p class="stakes-desc">✓ Subscribed — stakes tiers, the Balance Challenge, and Wake-Up Playlist sources are available on your alarms.</p>
         </div>
       </div>
     </div>
@@ -240,11 +262,20 @@
 
   <button id="owner-stats-tab" class="owner-stats-tab hidden" type="button" title="Tap to refresh">Installs: —</button>
 
+  <!-- Wake-Up Playlist (YouTube): hidden off-screen, not display:none, since
+       some browsers won't run an iframe's audio at all when display:none. -->
+  <div id="yt-audio-player" class="yt-audio-frame"></div>
+
   <!-- Balance Challenge: on-device object + face detection, loaded lazily only if a
        subscriber actually picks the Balance Challenge dismiss mode (see app.js). -->
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js"></script>
+
+  <!-- Wake-Up Playlist (YouTube): Google Identity Services for OAuth (to list
+       your playlists) + the YouTube IFrame Player API (to actually play one). -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://www.youtube.com/iframe_api"></script>
 
   <script src="app.js?v=1"></script>
 </body>
